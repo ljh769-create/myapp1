@@ -1,6 +1,6 @@
 {
-  "name": "좋은꿈참사랑한의원 치료 후기",
-  "short_name": "참사랑 후기",
+  "name": "한의원 치료 후기",
+  "short_name": "치료 후기",
   "description": "치료받으신 경험을 들려주세요",
   "start_url": "/",
   "scope": "/",

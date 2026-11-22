@@ -1,7 +1,7 @@
 # Render Blueprint: Render 대시보드 → New → Blueprint 에서 이 저장소를 선택하면 자동 설정됩니다.
 services:
   - type: web
-    name: chamsarang-review
+    name: clinic-review
     runtime: node
     region: singapore        # 한국에서 가장 가까운 Render 리전
     plan: starter            # 영구 디스크는 유료 플랜에서만 가능 (요금은 Render에서 확인)
@@ -19,6 +19,8 @@ services:
         sync: false          # 선택: 새 후기 텔레그램 알림 (BotFather에서 발급)
       - key: TELEGRAM_CHAT_ID
         sync: false          # 선택: 알림 받을 직원방 ID
+      - key: CLINIC_NAME
+        sync: false          # 화면에 표시할 한의원 이름 (배포 시 입력)
       - key: DATA_DIR
         value: /var/data
     disk:

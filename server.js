@@ -15,6 +15,7 @@ const TG_TOKEN = process.env.TELEGRAM_BOT_TOKEN || '';
 const TG_CHAT = process.env.TELEGRAM_CHAT_ID || '';
 const TG_API = process.env.TELEGRAM_API_BASE || 'https://api.telegram.org';
 const PUBLIC_URL = (process.env.PUBLIC_URL || process.env.RENDER_EXTERNAL_URL || '').replace(/\/$/, '');
+const CLINIC_NAME = process.env.CLINIC_NAME || '';
 const SECRET = process.env.SESSION_SECRET || crypto.randomBytes(32).toString('hex');
 
 fs.mkdirSync(DATA_DIR, { recursive: true });
@@ -223,6 +224,12 @@ async function handleApi(req, res, url) {
 }
 
 function serveStatic(req, res, url) {
+  // 한의원 이름은 코드에 두지 않고 환경변수 CLINIC_NAME 으로 주입
+  if (url.pathname === '/config.js' && CLINIC_NAME) {
+    const base = fs.readFileSync(path.join(PUBLIC_DIR, 'config.js'), 'utf8');
+    res.writeHead(200, { 'Content-Type': MIME['.js'], 'Cache-Control': 'no-cache' });
+    return res.end(base + `\nwindow.CLINIC.name = ${JSON.stringify(CLINIC_NAME).replace(/</g, '\\u003c')};\n`);
+  }
   let rel = decodeURIComponent(url.pathname);
   if (rel === '/') rel = '/index.html';
   if (rel === '/admin') rel = '/admin.html';

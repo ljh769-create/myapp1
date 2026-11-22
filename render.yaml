@@ -1,0 +1,23 @@
+# Render Blueprint: Render 대시보드 → New → Blueprint 에서 이 저장소를 선택하면 자동 설정됩니다.
+services:
+  - type: web
+    name: chamsarang-review
+    runtime: node
+    region: singapore        # 한국에서 가장 가까운 Render 리전
+    plan: starter            # 영구 디스크는 유료 플랜에서만 가능 (요금은 Render에서 확인)
+    buildCommand: echo "no build"
+    startCommand: node server.js
+    healthCheckPath: /
+    envVars:
+      - key: NODE_VERSION
+        value: 22
+      - key: ADMIN_PASSWORD
+        sync: false          # 배포 시 직접 입력하세요 (코드에 저장되지 않음)
+      - key: SESSION_SECRET
+        generateValue: true  # 자동으로 긴 랜덤 값 생성
+      - key: DATA_DIR
+        value: /var/data
+    disk:
+      name: review-data
+      mountPath: /var/data   # 후기 데이터(reviews.json)가 여기에 저장되어 재배포해도 유지됩니다
+      sizeGB: 1

@@ -10,6 +10,7 @@ ADMIN_PASSWORD=나만의비밀번호 node server.js
 ```
 - 후기 데이터는 `data/reviews.json`에 저장됩니다 (정기 백업 권장).
 - **실제 환자가 쓰려면 HTTPS 주소로 배포해야 합니다** (PWA 설치/서비스워커 조건). Render, Railway, Fly.io 등 Node를 돌릴 수 있는 곳에 올리고 영구 디스크(Volume)에 `DATA_DIR`을 지정하세요.
+- Render 배포: 저장소 연결 후 New → Blueprint 로 `render.yaml` 사용 (ADMIN_PASSWORD만 입력)
 - 환경변수: `ADMIN_PASSWORD`(필수 변경), `SESSION_SECRET`(권장), `PORT`, `DATA_DIR`
 
 ## QR 코드

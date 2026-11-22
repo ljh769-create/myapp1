@@ -1,0 +1,42 @@
+.adminbody{font-size:16px}
+.wrap{max-width:980px;margin:0 auto;padding:18px 16px 60px}
+.top{display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap:wrap}
+.top h1{margin:0;font-size:22px;white-space:normal}
+.tabs{display:flex;gap:6px;margin:16px 0;flex-wrap:wrap}
+.tabs button{font:inherit;padding:10px 16px;border-radius:999px;border:1.5px solid var(--line);background:#fff;cursor:pointer}
+.tabs button.on{background:var(--g);color:#fff;border-color:var(--g)}
+.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:12px}
+.stat{background:#fff;border:1px solid var(--line);border-radius:14px;padding:14px}
+.stat b{display:block;font-size:28px;color:var(--gd)}
+.stat span{color:var(--mut);font-size:14px}
+.panel{background:#fff;border:1px solid var(--line);border-radius:14px;padding:16px;margin:14px 0}
+.panel h3{margin:0 0 10px}
+.bar{display:flex;align-items:center;gap:10px;margin:6px 0;font-size:14px}
+.bar .lab{width:120px;flex:none}
+.bar .track{flex:1;height:12px;background:var(--line);border-radius:6px;overflow:hidden}
+.bar .track i{display:block;height:100%;background:var(--g)}
+.bar .val{width:44px;text-align:right;color:var(--mut)}
+.bar.warn .track i{background:var(--warn)}
+.rv{background:#fff;border:1px solid var(--line);border-radius:14px;padding:14px;margin:12px 0}
+.rv.new{border-left:5px solid var(--g)}
+.rv .meta{display:flex;justify-content:space-between;color:var(--mut);font-size:13px;gap:8px;flex-wrap:wrap}
+.tag{display:inline-block;background:var(--gl);color:var(--gd);border-radius:999px;padding:2px 10px;font-size:13px;margin:2px 4px 2px 0}
+.tag.bad{background:#fbeadd;color:var(--warn)}
+.q{margin:8px 0;white-space:pre-wrap;word-break:break-word}
+.q small{display:block;color:var(--mut)}
+.row{display:flex;gap:8px;flex-wrap:wrap;margin-top:8px}
+.sbtn{font:inherit;font-size:14px;padding:8px 14px;border-radius:10px;border:1.5px solid var(--line);background:#fff;cursor:pointer}
+.sbtn.p{background:var(--g);color:#fff;border-color:var(--g)}
+.sbtn.d{color:#b3261e}
+.qrbox{display:flex;gap:24px;flex-wrap:wrap;align-items:flex-start}
+.qrbox svg,.qrbox img{width:240px;height:240px;background:#fff;padding:10px;border:1px solid var(--line);border-radius:12px}
+.poster{display:none}
+.loginbox{max-width:360px;margin:20vh auto;padding:0 16px}
+.err{color:#b3261e;font-size:14px;min-height:20px}
+@media print{
+  body.adminbody>#admin>.wrap{display:none}
+  .poster{display:block;text-align:center;padding:40px}
+  .poster h1{font-size:34px;white-space:normal}
+  .poster svg{width:420px;height:420px}
+  .poster p{font-size:20px}
+}

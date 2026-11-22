@@ -26,3 +26,10 @@ ADMIN_PASSWORD=나만의비밀번호 node server.js
 
 ## 개인정보 유의
 연락처(선택)를 받으면 개인정보 수집에 해당합니다. 사용 시 안내 문구와 보관 기간 정책을 정해 두세요.
+
+## 텔레그램 새 후기 알림 (선택)
+1. 텔레그램에서 `@BotFather` → `/newbot` 으로 봇을 만들고 **토큰**을 받습니다.
+2. 직원방에 봇을 초대하고 방에서 아무 말이나 합니다.
+3. 브라우저에서 `https://api.telegram.org/bot<토큰>/getUpdates` 를 열어 `"chat":{"id":...}` 의 숫자가 **채팅 ID**입니다 (그룹은 `-`로 시작).
+4. `TELEGRAM_BOT_TOKEN`, `TELEGRAM_CHAT_ID` 환경변수를 설정합니다. (`PUBLIC_URL`은 Render에서 자동 인식)
+- 알림에는 점수 요약만 가고, 후기 본문·이름·연락처는 포함되지 않습니다.

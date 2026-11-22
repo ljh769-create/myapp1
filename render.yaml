@@ -15,6 +15,10 @@ services:
         sync: false          # 배포 시 직접 입력하세요 (코드에 저장되지 않음)
       - key: SESSION_SECRET
         generateValue: true  # 자동으로 긴 랜덤 값 생성
+      - key: TELEGRAM_BOT_TOKEN
+        sync: false          # 선택: 새 후기 텔레그램 알림 (BotFather에서 발급)
+      - key: TELEGRAM_CHAT_ID
+        sync: false          # 선택: 알림 받을 직원방 ID
       - key: DATA_DIR
         value: /var/data
     disk:

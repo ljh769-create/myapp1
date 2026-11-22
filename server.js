@@ -10,6 +10,11 @@ const ADMIN_PASSWORD = process.env.ADMIN_PASSWORD || 'changeme';
 const DATA_DIR = process.env.DATA_DIR || path.join(__dirname, 'data');
 const DATA_FILE = path.join(DATA_DIR, 'reviews.json');
 const PUBLIC_DIR = path.join(__dirname, 'public');
+// 텔레그램 알림 (선택): 둘 다 설정하면 새 후기가 올 때 직원방에 알림이 갑니다.
+const TG_TOKEN = process.env.TELEGRAM_BOT_TOKEN || '';
+const TG_CHAT = process.env.TELEGRAM_CHAT_ID || '';
+const TG_API = process.env.TELEGRAM_API_BASE || 'https://api.telegram.org';
+const PUBLIC_URL = (process.env.PUBLIC_URL || process.env.RENDER_EXTERNAL_URL || '').replace(/\/$/, '');
 const SECRET = process.env.SESSION_SECRET || crypto.randomBytes(32).toString('hex');
 
 fs.mkdirSync(DATA_DIR, { recursive: true });
@@ -120,6 +125,28 @@ function cleanReview(b) {
   };
 }
 
+// 알림에는 개인정보(자유 서술, 이름, 연락처)를 넣지 않고 점수 요약만 보냅니다.
+function notifyTelegram(r) {
+  if (!TG_TOKEN || !TG_CHAT) return;
+  const ra = r.ratings;
+  const low = Object.values(ra).some((v) => v != null && v <= 2) || (r.nps != null && r.nps <= 6);
+  const badTags = r.badTags.filter((t) => t !== '없어요');
+  const lines = [
+    low ? '⚠️ 새 후기 (낮은 점수 있음 — 확인 필요)' : '🌿 새 후기가 도착했어요',
+    `호전 ${ra.improvement ?? '-'} · 설명 ${ra.explain ?? '-'} · 존중 ${ra.respect ?? '-'} · 대기 ${ra.wait ?? '-'} · 청결 ${ra.clean ?? '-'} (5점)`,
+    r.nps != null ? `추천 의향 ${r.nps}/10` : '',
+    badTags.length || r.badText ? `아쉬운 점 있음${badTags.length ? ': ' + badTags.join(', ') : ''}` : '',
+    r.contact.phone ? '📞 연락 희망 환자' : '',
+    PUBLIC_URL ? `답글 달기: ${PUBLIC_URL}/admin` : '',
+  ].filter(Boolean);
+  fetch(`${TG_API}/bot${TG_TOKEN}/sendMessage`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ chat_id: TG_CHAT, text: lines.join('\n'), disable_web_page_preview: true }),
+    signal: AbortSignal.timeout(8000),
+  }).then((res) => { if (!res.ok) console.error('텔레그램 알림 실패:', res.status); })
+    .catch((e) => console.error('텔레그램 알림 오류:', e.message));
+}
+
 // 환자에게 보여줄 공개 정보(답글)만 반환
 const publicView = (r) => ({ id: r.id, createdAt: r.createdAt, reply: r.reply || null });
 
@@ -141,6 +168,7 @@ async function handleApi(req, res, url) {
       ...review, reply: null, read: false, note: '',
     });
     save();
+    notifyTelegram(reviews[reviews.length - 1]);
     return send(res, 201, { id, token });
   }
 
@@ -226,5 +254,6 @@ http.createServer(async (req, res) => {
   }
 }).listen(PORT, () => {
   console.log(`서버 실행 중: http://localhost:${PORT}  (관리자: /admin)`);
+  console.log(TG_TOKEN && TG_CHAT ? '텔레그램 알림: 켜짐' : '텔레그램 알림: 꺼짐 (TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID 설정 시 켜짐)');
   if (ADMIN_PASSWORD === 'changeme') console.warn('⚠ ADMIN_PASSWORD 환경변수를 꼭 바꿔주세요!');
 });

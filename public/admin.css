@@ -40,3 +40,27 @@
   .poster svg{width:420px;height:420px}
   .poster p{font-size:20px}
 }
+/* 예약 관리 */
+.tabs select{font:inherit;padding:9px 12px;border-radius:999px;border:1.5px solid var(--line);background:#fff}
+.bkdate{margin:20px 0 4px}
+.rv.bk{padding:12px 14px}
+.rv.bk.pending{border-left:5px solid #e0a100}
+.rv.bk.cancelled{opacity:.6}
+.bkrow{display:flex;gap:14px;align-items:flex-start}
+.bktime{font-size:22px;color:var(--gd);min-width:62px}
+.bkmain{flex:1}
+.rv.bk textarea{margin-top:8px;font-size:14px;padding:8px 10px}
+.formgrid{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:8px;margin:8px 0}
+.formgrid label{font-size:14px;color:var(--mut)}
+.formgrid select,.formgrid input{font:inherit;width:100%;padding:10px;border:1.5px solid var(--line);border-radius:10px;background:#fff}
+details.panel summary{cursor:pointer;font-weight:600}
+.docedit{display:flex;gap:16px;flex-wrap:wrap}
+.docphoto{width:200px;aspect-ratio:16/9;border-radius:12px;background:var(--gl) center/cover no-repeat;display:flex;align-items:center;justify-content:center;color:var(--mut);font-size:14px;flex:none}
+.docfields{flex:1;min-width:260px}
+.docfields h4{margin:14px 0 6px}
+label.sbtn input[type=file]{display:none}
+label.sbtn input[type=checkbox]{width:auto}
+.hours td{padding:2px 4px}
+.hours input[type=time]{padding:6px 8px;width:auto}
+.hours input[type=checkbox]{width:auto}
+.savebar{position:sticky;bottom:10px;box-shadow:0 4px 16px rgba(0,0,0,.15)}

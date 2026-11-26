@@ -10,7 +10,7 @@ self.addEventListener('activate', (e) => {
 });
 self.addEventListener('fetch', (e) => {
   const url = new URL(e.request.url);
-  if (e.request.method !== 'GET' || url.origin !== location.origin || url.pathname.startsWith('/api/') || url.pathname.startsWith('/admin')) return;
+  if (e.request.method !== 'GET' || url.origin !== location.origin || url.pathname.startsWith('/api/') || url.pathname.startsWith('/admin') || url.pathname.startsWith('/booking') || url.pathname.startsWith('/book.') || url.pathname.startsWith('/photos/')) return;
   // 네트워크 우선, 실패 시 캐시 (질문/문구 수정이 바로 반영되도록)
   e.respondWith(
     fetch(e.request).then((res) => {

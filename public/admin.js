@@ -3,7 +3,7 @@
   const C = window.CLINIC;
   const TK = 'admin-token';
   let token = sessionStorage.getItem(TK) || '';
-  let reviews = [], tab = 'summary', filter = 'all';
+  let reviews = [], tab = 'book', filter = 'all';
 
   function h(tag, props, ...kids) {
     const el = document.createElement(tag);
@@ -34,13 +34,14 @@
       token = j.token; sessionStorage.setItem(TK, token); start();
     };
     pw.addEventListener('keydown', (e) => e.key === 'Enter' && go());
-    root.replaceChildren(h('div', { class: 'loginbox' }, h('h1', {}, '🌿 후기 관리'), pw, err,
+    root.replaceChildren(h('div', { class: 'loginbox' }, h('h1', {}, '🌿 예약·후기 관리'), pw, err,
       h('button', { class: 'btn primary', onclick: go }, '로그인')));
     pw.focus();
   }
 
+  const AB = window.AdminBooking({ h, api, redraw: () => draw() });
   async function start() {
-    reviews = await api('/reviews');
+    [reviews] = await Promise.all([api('/reviews'), AB.load()]);
     draw();
   }
 
@@ -157,7 +158,7 @@
       img.onload = () => {
         const c = document.createElement('canvas'); c.width = c.height = 1024;
         const x = c.getContext('2d'); x.fillStyle = '#fff'; x.fillRect(0, 0, 1024, 1024); x.drawImage(img, 0, 0, 1024, 1024);
-        const a = document.createElement('a'); a.href = c.toDataURL('image/png'); a.download = 'review-qr.png'; a.click();
+        const a = document.createElement('a'); a.href = c.toDataURL('image/png'); a.download = url.includes('/booking') ? 'booking-qr.png' : 'review-qr.png'; a.click();
       };
       img.src = 'data:image/svg+xml;charset=utf-8,' + encodeURIComponent(s);
     };
@@ -178,13 +179,14 @@
   }
 
   function draw() {
-    const tabs = [['summary', '📊 요약'], ['list', `💬 후기 (${reviews.length})`], ['qr', '📱 QR 코드']];
+    const pend = AB.pendingCount();
+    const tabs = [['book', `📅 예약${pend ? ` · 확인 ${pend}` : ''}`], ['docs', '👨‍⚕️ 원장님·진료시간'], ['summary', '📊 후기 요약'], ['list', `💬 후기 (${reviews.length})`], ['qr', '📱 QR 코드']];
     root.replaceChildren(h('div', { class: 'wrap' },
-      h('div', { class: 'top' }, h('h1', {}, `🌿 ${C.name} 후기 관리`),
+      h('div', { class: 'top' }, h('h1', {}, `🌿 ${C.name} 예약·후기 관리`),
         h('div', { class: 'row' }, h('button', { class: 'sbtn', onclick: csv }, '엑셀(CSV) 내보내기'),
           h('button', { class: 'sbtn', onclick: () => { sessionStorage.removeItem(TK); token = ''; login(); } }, '로그아웃'))),
       h('div', { class: 'tabs' }, tabs.map(([k, l]) => h('button', { class: tab === k ? 'on' : '', onclick: () => { tab = k; draw(); } }, l))),
-      tab === 'summary' ? summary() : tab === 'list' ? list() : qrTab()));
+      tab === 'book' ? AB.bookingsTab() : tab === 'docs' ? AB.settingsTab() : tab === 'summary' ? summary() : tab === 'list' ? list() : qrTab()));
     const poster = root.querySelector('.poster'); if (poster) root.append(poster);
   }
 

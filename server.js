@@ -19,21 +19,23 @@ const CLINIC_NAME = process.env.CLINIC_NAME || '';
 const SECRET = process.env.SESSION_SECRET || crypto.randomBytes(32).toString('hex');
 
 fs.mkdirSync(DATA_DIR, { recursive: true });
+const booking = require('./booking')({ DATA_DIR, writeJson, tgSend: (t) => tgSend(t), PUBLIC_URL });
 let reviews = [];
 try { reviews = JSON.parse(fs.readFileSync(DATA_FILE, 'utf8')); } catch { reviews = []; }
 
-function save() {
-  fs.mkdirSync(DATA_DIR, { recursive: true });
-  const tmp = DATA_FILE + '.tmp';
-  fs.writeFileSync(tmp, JSON.stringify(reviews, null, 2));
-  fs.renameSync(tmp, DATA_FILE);
+function writeJson(file, data) {
+  fs.mkdirSync(path.dirname(file), { recursive: true });
+  const tmp = file + '.tmp';
+  fs.writeFileSync(tmp, JSON.stringify(data, null, 2));
+  fs.renameSync(tmp, file);
 }
+function save() { writeJson(DATA_FILE, reviews); }
 
 const MIME = {
   '.html': 'text/html; charset=utf-8', '.js': 'text/javascript; charset=utf-8',
   '.css': 'text/css; charset=utf-8', '.json': 'application/json; charset=utf-8',
   '.webmanifest': 'application/manifest+json', '.svg': 'image/svg+xml',
-  '.png': 'image/png', '.ico': 'image/x-icon',
+  '.png': 'image/png', '.ico': 'image/x-icon', '.jpg': 'image/jpeg', '.webp': 'image/webp',
 };
 
 function send(res, status, body, headers = {}) {
@@ -126,6 +128,16 @@ function cleanReview(b) {
   };
 }
 
+function tgSend(text) {
+  if (!TG_TOKEN || !TG_CHAT) return;
+  fetch(`${TG_API}/bot${TG_TOKEN}/sendMessage`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ chat_id: TG_CHAT, text, disable_web_page_preview: true }),
+    signal: AbortSignal.timeout(8000),
+  }).then((res) => { if (!res.ok) console.error('텔레그램 알림 실패:', res.status); })
+    .catch((e) => console.error('텔레그램 알림 오류:', e.message));
+}
+
 // 알림에는 개인정보(자유 서술, 이름, 연락처)를 넣지 않고 점수 요약만 보냅니다.
 function notifyTelegram(r) {
   if (!TG_TOKEN || !TG_CHAT) return;
@@ -140,12 +152,7 @@ function notifyTelegram(r) {
     r.contact.phone ? '📞 연락 희망 환자' : '',
     PUBLIC_URL ? `답글 달기: ${PUBLIC_URL}/admin` : '',
   ].filter(Boolean);
-  fetch(`${TG_API}/bot${TG_TOKEN}/sendMessage`, {
-    method: 'POST', headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ chat_id: TG_CHAT, text: lines.join('\n'), disable_web_page_preview: true }),
-    signal: AbortSignal.timeout(8000),
-  }).then((res) => { if (!res.ok) console.error('텔레그램 알림 실패:', res.status); })
-    .catch((e) => console.error('텔레그램 알림 오류:', e.message));
+  tgSend(lines.join('\n'));
 }
 
 // 환자에게 보여줄 공개 정보(답글)만 반환
@@ -154,6 +161,11 @@ const publicView = (r) => ({ id: r.id, createdAt: r.createdAt, reply: r.reply ||
 async function handleApi(req, res, url) {
   const ip = req.socket.remoteAddress || '';
   const p = url.pathname;
+
+  if (p.startsWith('/api/booking') || p.startsWith('/api/admin/booking') || p.startsWith('/api/admin/doctors')) {
+    const handled = await booking.handle(req, res, url, { ip, send, readBody, limited, isAdmin, sign, safeEq, str });
+    if (handled !== false) return;
+  }
 
   if (req.method === 'POST' && p === '/api/reviews') {
     if (limited(ip, 'post', 10, 3600 * 1000)) return send(res, 429, { error: '잠시 후 다시 시도해 주세요.' });
@@ -224,6 +236,14 @@ async function handleApi(req, res, url) {
 }
 
 function serveStatic(req, res, url) {
+  const ph = url.pathname.match(/^\/photos\/([a-z0-9]+\.(?:jpg|png|webp))$/);
+  if (ph) {
+    return fs.readFile(path.join(booking.PHOTO_DIR, ph[1]), (err, data) => {
+      if (err) return send(res, 404, 'not found');
+      res.writeHead(200, { 'Content-Type': MIME[path.extname(ph[1])], 'Cache-Control': 'public, max-age=86400', 'X-Content-Type-Options': 'nosniff' });
+      res.end(data);
+    });
+  }
   // 한의원 이름은 코드에 두지 않고 환경변수 CLINIC_NAME 으로 주입
   if (url.pathname === '/config.js' && CLINIC_NAME) {
     const base = fs.readFileSync(path.join(PUBLIC_DIR, 'config.js'), 'utf8');
@@ -233,6 +253,7 @@ function serveStatic(req, res, url) {
   let rel = decodeURIComponent(url.pathname);
   if (rel === '/') rel = '/index.html';
   if (rel === '/admin') rel = '/admin.html';
+  if (rel === '/booking' || rel === '/booking/' || rel === '/reserve') rel = '/booking.html';
   const file = path.normalize(path.join(PUBLIC_DIR, rel));
   if (!file.startsWith(PUBLIC_DIR + path.sep)) return send(res, 403, 'forbidden');
   fs.readFile(file, (err, data) => {

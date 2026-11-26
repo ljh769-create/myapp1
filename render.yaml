@@ -19,6 +19,8 @@ services:
         sync: false          # 선택: 새 후기 텔레그램 알림 (BotFather에서 발급)
       - key: TELEGRAM_CHAT_ID
         sync: false          # 선택: 알림 받을 직원방 ID
+      - key: STAFF_PASSWORD
+        sync: false          # 한약 진행 관리(/herb) 직원 공용 비밀번호 (비우면 ADMIN_PASSWORD 사용)
       - key: CLINIC_NAME
         sync: false          # 화면에 표시할 한의원 이름 (배포 시 입력)
       - key: DATA_DIR

@@ -17,6 +17,8 @@ const TG_API = process.env.TELEGRAM_API_BASE || 'https://api.telegram.org';
 const PUBLIC_URL = (process.env.PUBLIC_URL || process.env.RENDER_EXTERNAL_URL || '').replace(/\/$/, '');
 const CLINIC_NAME = process.env.CLINIC_NAME || '';
 const SECRET = process.env.SESSION_SECRET || crypto.randomBytes(32).toString('hex');
+// 한약 진행 관리(/herb)용 직원 공용 비밀번호. 없으면 관리자 비밀번호를 같이 씁니다.
+const STAFF_PASSWORD = process.env.STAFF_PASSWORD || ADMIN_PASSWORD;
 
 fs.mkdirSync(DATA_DIR, { recursive: true });
 let reviews = [];
@@ -151,9 +153,14 @@ function notifyTelegram(r) {
 // 환자에게 보여줄 공개 정보(답글)만 반환
 const publicView = (r) => ({ id: r.id, createdAt: r.createdAt, reply: r.reply || null });
 
+const herb = require('./herb')({
+  dataDir: DATA_DIR, password: STAFF_PASSWORD, secret: SECRET, send, readBody, limited, safeEq,
+});
+
 async function handleApi(req, res, url) {
   const ip = req.socket.remoteAddress || '';
   const p = url.pathname;
+  if (p.startsWith('/api/herb/')) return herb.handle(req, res, url);
 
   if (req.method === 'POST' && p === '/api/reviews') {
     if (limited(ip, 'post', 10, 3600 * 1000)) return send(res, 429, { error: '잠시 후 다시 시도해 주세요.' });
@@ -233,6 +240,7 @@ function serveStatic(req, res, url) {
   let rel = decodeURIComponent(url.pathname);
   if (rel === '/') rel = '/index.html';
   if (rel === '/admin') rel = '/admin.html';
+  if (rel === '/herb') rel = '/herb.html';
   const file = path.normalize(path.join(PUBLIC_DIR, rel));
   if (!file.startsWith(PUBLIC_DIR + path.sep)) return send(res, 403, 'forbidden');
   fs.readFile(file, (err, data) => {
@@ -260,7 +268,7 @@ http.createServer(async (req, res) => {
     send(res, 500, { error: '서버에 저장하지 못했어요. 잠시 후 다시 시도해 주세요.' });
   }
 }).listen(PORT, () => {
-  console.log(`서버 실행 중: http://localhost:${PORT}  (관리자: /admin)`);
+  console.log(`서버 실행 중: http://localhost:${PORT}  (관리자: /admin, 한약 진행: /herb)`);
   console.log(TG_TOKEN && TG_CHAT ? '텔레그램 알림: 켜짐' : '텔레그램 알림: 꺼짐 (TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID 설정 시 켜짐)');
   if (ADMIN_PASSWORD === 'changeme') console.warn('⚠ ADMIN_PASSWORD 환경변수를 꼭 바꿔주세요!');
 });

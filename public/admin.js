@@ -40,6 +40,7 @@
   }
 
   const AB = window.AdminBooking({ h, api, redraw: () => draw() });
+  const AS = window.AdminSite({ h, api, redraw: () => draw(), getDoctors: () => AB.getDoctors() });
   async function start() {
     [reviews] = await Promise.all([api('/reviews'), AB.load()]);
     draw();
@@ -138,7 +139,7 @@
     const svg = tmp.firstElementChild; svg.setAttribute('width', size); svg.setAttribute('height', size); return svg;
   }
   function qrTab() {
-    const input = h('input', { value: location.origin + '/', type: 'url' });
+    const input = h('input', { value: location.origin + '/review', type: 'url' });
     const box = h('div', { class: 'qrbox' });
     const poster = h('div', { class: 'poster' });
     const draw2 = () => {
@@ -180,13 +181,13 @@
 
   function draw() {
     const pend = AB.pendingCount();
-    const tabs = [['book', `📅 예약${pend ? ` · 확인 ${pend}` : ''}`], ['docs', '👨‍⚕️ 원장님·진료시간'], ['summary', '📊 후기 요약'], ['list', `💬 후기 (${reviews.length})`], ['qr', '📱 QR 코드']];
+    const tabs = [['book', `📅 예약${pend ? ` · 확인 ${pend}` : ''}`], ['docs', '👨‍⚕️ 원장님·진료시간'], ['site', '🏠 홈페이지'], ['cols', '✍️ 칼럼'], ['summary', '📊 후기 요약'], ['list', `💬 후기 (${reviews.length})`], ['qr', '📱 QR 코드']];
     root.replaceChildren(h('div', { class: 'wrap' },
       h('div', { class: 'top' }, h('h1', {}, `🌿 ${C.name} 예약·후기 관리`),
         h('div', { class: 'row' }, h('button', { class: 'sbtn', onclick: csv }, '엑셀(CSV) 내보내기'),
           h('button', { class: 'sbtn', onclick: () => { sessionStorage.removeItem(TK); token = ''; login(); } }, '로그아웃'))),
       h('div', { class: 'tabs' }, tabs.map(([k, l]) => h('button', { class: tab === k ? 'on' : '', onclick: () => { tab = k; draw(); } }, l))),
-      tab === 'book' ? AB.bookingsTab() : tab === 'docs' ? AB.settingsTab() : tab === 'summary' ? summary() : tab === 'list' ? list() : qrTab()));
+      tab === 'book' ? AB.bookingsTab() : tab === 'docs' ? AB.settingsTab() : tab === 'site' ? AS.siteTab() : tab === 'cols' ? AS.columnsTab() : tab === 'summary' ? summary() : tab === 'list' ? list() : qrTab()));
     const poster = root.querySelector('.poster'); if (poster) root.append(poster);
   }
 

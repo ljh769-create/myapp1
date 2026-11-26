@@ -20,6 +20,7 @@ const SECRET = process.env.SESSION_SECRET || crypto.randomBytes(32).toString('he
 
 fs.mkdirSync(DATA_DIR, { recursive: true });
 const booking = require('./booking')({ DATA_DIR, writeJson, tgSend: (t) => tgSend(t), PUBLIC_URL });
+const site = require('./site')({ DATA_DIR, writeJson, booking, CLINIC_NAME, PUBLIC_URL });
 let reviews = [];
 try { reviews = JSON.parse(fs.readFileSync(DATA_FILE, 'utf8')); } catch { reviews = []; }
 
@@ -166,6 +167,9 @@ async function handleApi(req, res, url) {
     const handled = await booking.handle(req, res, url, { ip, send, readBody, limited, isAdmin, sign, safeEq, str });
     if (handled !== false) return;
   }
+  if (p === '/api/admin/site' || p.startsWith('/api/admin/columns')) {
+    return site.handle(req, res, url, { send, readBody, isAdmin, str });
+  }
 
   if (req.method === 'POST' && p === '/api/reviews') {
     if (limited(ip, 'post', 10, 3600 * 1000)) return send(res, 429, { error: '잠시 후 다시 시도해 주세요.' });
@@ -250,8 +254,9 @@ function serveStatic(req, res, url) {
     res.writeHead(200, { 'Content-Type': MIME['.js'], 'Cache-Control': 'no-cache' });
     return res.end(base + `\nwindow.CLINIC.name = ${JSON.stringify(CLINIC_NAME).replace(/</g, '\\u003c')};\n`);
   }
+  if (site.render(req, res, url)) return;
   let rel = decodeURIComponent(url.pathname);
-  if (rel === '/') rel = '/index.html';
+  if (rel === '/review' || rel === '/review/') rel = '/index.html';
   if (rel === '/admin') rel = '/admin.html';
   if (rel === '/booking' || rel === '/booking/' || rel === '/reserve') rel = '/booking.html';
   const file = path.normalize(path.join(PUBLIC_DIR, rel));

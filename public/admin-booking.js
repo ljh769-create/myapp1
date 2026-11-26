@@ -176,5 +176,5 @@ window.AdminBooking = (({ h, api, redraw }) => {
       saveBtn, msg);
   }
 
-  return { bookingsTab, settingsTab, pendingCount: () => (loaded ? pendingCount() : 0), load: () => load().then(() => { draft = null; }) };
+  return { bookingsTab, settingsTab, getDoctors: () => (settings ? settings.doctors : []), pendingCount: () => (loaded ? pendingCount() : 0), load: () => load().then(() => { draft = null; }) };
 });

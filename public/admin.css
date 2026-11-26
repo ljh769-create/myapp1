@@ -64,3 +64,12 @@ label.sbtn input[type=checkbox]{width:auto}
 .hours input[type=time]{padding:6px 8px;width:auto}
 .hours input[type=checkbox]{width:auto}
 .savebar{position:sticky;bottom:10px;box-shadow:0 4px 16px rgba(0,0,0,.15)}
+/* 홈페이지·칼럼 */
+.field b{display:block;color:var(--ink);font-size:15px}
+.hintline{display:block;color:var(--mut);font-size:13px}
+.field textarea,.field input{margin-top:4px}
+.warnbox{border-color:#e0a100;background:#fffaf0}
+.panel > input,.panel > textarea,.panel > select{margin:6px 0;font:inherit;width:100%;padding:12px;border:1.5px solid var(--line);border-radius:12px;background:#fff}
+textarea.mono{font-family:ui-monospace,Menlo,Consolas,monospace;font-size:15px;line-height:1.6}
+.mu{margin:12px 0}
+.mu textarea{font-size:14px}

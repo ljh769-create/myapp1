@@ -244,5 +244,5 @@ module.exports = function createBooking({ DATA_DIR, writeJson, tgSend, PUBLIC_UR
     return false;
   }
 
-  return { handle, PHOTO_DIR };
+  return { handle, PHOTO_DIR, getSettings: () => settings, docName };
 };

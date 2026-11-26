@@ -6,7 +6,7 @@
 ## 실행
 ```bash
 ADMIN_PASSWORD=나만의비밀번호 node server.js
-# 환자용: http://localhost:3000/    관리자: http://localhost:3000/admin
+# 홈페이지: /   예약: /booking   후기: /review   관리자: /admin
 ```
 - 후기 데이터는 `data/reviews.json`에 저장됩니다 (정기 백업 권장).
 - **실제 환자가 쓰려면 HTTPS 주소로 배포해야 합니다** (PWA 설치/서비스워커 조건). Render, Railway, Fly.io 등 Node를 돌릴 수 있는 곳에 올리고 영구 디스크(Volume)에 `DATA_DIR`을 지정하세요.
@@ -42,3 +42,11 @@ ADMIN_PASSWORD=나만의비밀번호 node server.js
 - 환자는 같은 기기에서 "내 예약 확인"으로 상태 확인·취소 가능
 - 텔레그램 알림: 새 예약/환자 취소 시 원장님·일시만 전송 (이름·연락처·증상 제외)
 - 개인정보: 접수 시 수집·이용 동의 필수, 예약일로부터 `BOOKING_RETENTION_DAYS`(기본 180)일 지나면 이름·연락처·메모 자동 삭제
+
+## 🏠 AI가 읽는 홈페이지 (SEO·GEO)
+- `/` 메인(한방 체외충격파 중점), `/doctors/<id>` 원장님, `/columns` 칼럼 — 모두 서버에서 완성된 HTML로 내보내 검색엔진·AI가 읽을 수 있습니다.
+- 자동 생성: `/robots.txt`(AI 크롤러 허용), `/sitemap.xml`, `/llms.txt`(AI용 요약), schema.org(MedicalClinic·Physician·FAQPage·MedicalWebPage)
+- 관리자 → **🏠 홈페이지**: 주소·첫 화면·체외충격파 설명·FAQ 등 문구 수정 (기본 문구는 초안, 원장님 검토 필수)
+- 관리자 → **✍️ 칼럼**: 작성·발행, 네이버 블로그/쓰레드/문자용 요약+링크 자동 생성 (원소스 멀티유즈)
+- 전화·진료시간·의료진은 예약 설정 한 곳에서 관리되어 모든 페이지에 똑같이 표시됩니다.
+- ⚠️ 후기 앱 주소가 `/` → `/review` 로 바뀌었습니다. 이전에 인쇄한 QR이 있다면 새로 만들어 주세요.

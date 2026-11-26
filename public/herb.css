@@ -60,3 +60,9 @@ pre.sum{white-space:pre-wrap;background:#fff;border:1px solid var(--line);border
 .empty{color:var(--mut);font-size:14px;text-align:center;padding:10px}
 .rule{background:#fff;border:1px solid var(--line);border-radius:12px;padding:10px 14px;font-size:14px;margin-bottom:12px;color:var(--mut)}
 .rule b{color:var(--ink)}
+.uses{display:grid;grid-template-columns:repeat(auto-fit,minmax(130px,1fr));gap:8px}
+.use{display:block;background:#f6f7f4;border-radius:10px;padding:8px}
+.use em{display:block;font-style:normal;font-weight:700;font-size:14px}
+.use input{width:100%;box-sizing:border-box;font:inherit;padding:8px;border:1.5px solid var(--line);border-radius:8px;margin:4px 0}
+.use small{color:var(--mut);font-size:12px}
+.lowrow td{background:#fff4f2}

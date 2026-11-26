@@ -15,6 +15,25 @@
     return `${d.getMonth() + 1}.${d.getDate()} ${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`;
   };
   const isToday = (iso) => iso && new Date(iso).toDateString() === new Date().toDateString();
+  const packs = () => S.stock.filter((x) => x.cat === '포장재');
+  const low = () => S.stock.filter((x) => x.min > 0 ? x.qty <= x.min : x.qty <= 0);
+  // 조제/발송 때 쓴 포장재 입력칸 (직전에 쓴 값을 기억)
+  const USE_KEY = (kind) => 'herbUse_' + kind;
+  function useHTML(kind, defaults) {
+    const saved = JSON.parse(localStorage.getItem(USE_KEY(kind)) || '{}');
+    const items = packs();
+    if (!items.length) return '';
+    return `<div class="f"><span>사용한 포장재 (재고에서 자동 차감)</span><div class="uses">${items.map((x) => {
+      const v = saved[x.id] ?? defaults(x) ?? '';
+      return `<label class="use"><em>${esc(x.name)}</em><input type="number" min="0" inputmode="numeric" data-use="${x.id}" value="${esc(v)}"><small>${esc(x.unit)} · 남은 ${x.qty}</small></label>`;
+    }).join('')}</div></div>`;
+  }
+  function readUse(el, kind) {
+    const use = [], keep = {};
+    el.querySelectorAll('[data-use]').forEach((i) => { keep[i.dataset.use] = i.value; const q = Number(i.value); if (q > 0) use.push({ id: i.dataset.use, qty: q }); });
+    localStorage.setItem(USE_KEY(kind), JSON.stringify(keep));
+    return use;
+  }
   const roundTxt = (o) => (o.round ? `${o.round}${o.total ? '/' + o.total : '회차'}` : '');
 
   function toast(msg, err) {
@@ -113,7 +132,9 @@
 
   function boardHTML(counts) {
     const sent = S.orders.filter((o) => o.status === 'sent' && match(o)).sort((a, b) => (b.sentAt || '').localeCompare(a.sentAt || ''));
+    const lw = low();
     return `
+      ${lw.length ? `<div class="warnbox" data-tab="stock" style="cursor:pointer">⚠ <b>재고 부족 — 주문/제작 필요</b><br>${lw.map((x) => `${esc(x.name)} ${x.qty}${esc(x.unit)}${x.min ? ` (최소 ${x.min})` : ''}`).join(' · ')}</div>` : ''}
       <div class="rule"><b>규칙</b> ① 조제 전에 <b>조제 시작</b>을 눌러 내 이름을 건다 ② 처방전 없으면 조제 버튼이 안 나온다 ③ <b>조제완료</b>(보관 위치 기록)가 된 약만 발송할 수 있다</div>
       <input class="search" type="search" placeholder="환자 이름·처방·메모 검색">
       <div class="cols">
@@ -190,7 +211,11 @@
       '',
       '------------------------------',
       '상비 탕약재고',
-      S.stock.map((s) => `${s.name} ${s.qty}`).join(' / '),
+      S.stock.filter((s) => s.cat !== '포장재').map((s) => `${s.name} ${s.qty}`).join(' / '),
+      '',
+      '포장재',
+      packs().map((s) => `${s.name} ${s.qty}${s.unit}`).join(' / '),
+      ...(low().length ? ['', '⚠ 부족 (주문/제작 필요): ' + low().map((s) => `${s.name} ${s.qty}${s.unit}`).join(', ')] : []),
     ].join('\n');
   }
   function todayHTML() {
@@ -201,13 +226,21 @@
 
   // ---------- 재고 ----------
   function stockHTML() {
-    return `<table class="tbl"><tr><th>약</th><th>수량</th><th>최근 수정</th></tr>
-      ${S.stock.map((s) => `<tr>
-        <td><b>${esc(s.name)}</b> <small style="color:var(--mut)">${esc(s.unit)}</small></td>
-        <td><div class="qty"><button class="ab" data-stock="${s.id}" data-d="-1">−</button><b class="${s.qty <= 0 ? 'zero' : ''}">${s.qty}</b><button class="ab" data-stock="${s.id}" data-d="1">＋</button><button class="ab" data-stockset="${s.id}">직접</button></div></td>
-        <td style="font-size:13px;color:var(--mut)">${s.updatedAt ? fmt(s.updatedAt) + ' ' + esc(s.by) : '-'}</td></tr>`).join('')}
-      </table>
-      <p><button class="ab" data-a="addstock">＋ 약 추가</button></p>`;
+    const row = (s) => {
+      const isLow = s.min > 0 ? s.qty <= s.min : s.qty <= 0;
+      return `<tr class="${isLow ? 'lowrow' : ''}">
+        <td><b>${esc(s.name)}</b>${isLow ? ' <span class="badge r">부족</span>' : ''}<br><small style="color:var(--mut)">최소 ${s.min || '-'} ${esc(s.unit)} · <a href="#" data-stockmin="${s.id}">최소 설정</a></small></td>
+        <td><div class="qty"><button class="ab" data-stock="${s.id}" data-d="-1">−</button><b class="${s.qty <= 0 ? 'zero' : ''}">${s.qty}</b><button class="ab" data-stock="${s.id}" data-d="1">＋</button></div>
+          <div class="acts" style="margin-top:4px"><button class="ab" data-stockin="${s.id}">입고</button><button class="ab" data-stockset="${s.id}">실사</button></div></td>
+        <td style="font-size:13px;color:var(--mut)">${s.updatedAt ? fmt(s.updatedAt) + '<br>' + esc(s.by) : '-'}</td></tr>`;
+    };
+    const table = (title, list) => `<h3 style="margin:16px 4px 8px">${title}</h3><table class="tbl"><tr><th>품목</th><th>수량</th><th>최근</th></tr>${list.map(row).join('') || '<tr><td colspan="3" class="empty">없음</td></tr>'}</table>`;
+    return `<p class="sub">파우치·박스는 <b>조제완료/택배 발송 때 입력한 만큼 자동으로 빠져요.</b> 새로 들어오면 <b>입고</b>, 직접 세어 맞출 땐 <b>실사</b>. 최소 수량 아래로 내려가면 진행판 맨 위에 경고가 떠요.</p>
+      ${table('📦 포장재', S.stock.filter((x) => x.cat === '포장재'))}
+      ${table('🍵 상비 탕약', S.stock.filter((x) => x.cat !== '포장재'))}
+      <p><button class="ab" data-a="addstock">＋ 품목 추가</button></p>
+      <h3 style="margin:16px 4px 8px">최근 재고 변동</h3>
+      <div class="hist">${(S.stockLog || []).slice(0, 40).map((l) => `<div><time>${fmt(l.at)}</time><b>${esc(l.by)}</b> ${esc(l.name)} ${l.delta > 0 ? '+' : ''}${l.delta} → ${l.after} · ${esc(l.reason)}</div>`).join('') || '<div class="empty">기록 없음</div>'}</div>`;
   }
 
   // ---------- 설정 ----------
@@ -298,11 +331,12 @@
         ${o.status === 'compounding' && o.assignee && o.assignee !== me() ? `<div class="warnbox">${esc(o.assignee)}님이 조제중인 카드예요. 정말 완료된 걸 확인했나요?</div>` : ''}
         <label class="f"><span>보관 위치 *</span><input id="loc" value="${esc(o.location)}" placeholder="예: 냉동 A칸, 택배 선반"></label>
         <div class="seg" style="margin-bottom:6px">${['냉동', '냉장', '택배 선반', '데스크'].map((x) => `<button type="button" data-loc="${x}">${x}</button>`).join('')}</div>
+        ${o.status === 'compounding' ? useHTML('done', (x) => (x.name === '파우치' ? '' : x.name === '쌍화탕 박스' ? '' : '')) : ''}
         <label class="f"><span>메모 (선택)</span><input id="mn"></label>
         <div class="okrow"><button class="ab" data-close>취소</button><button class="ab p" id="ok">완료</button></div>`, (el) => {
         el.querySelectorAll('[data-loc]').forEach((b) => (b.onclick = () => { el.querySelector('#loc').value = b.dataset.loc; }));
         el.querySelector('#ok').onclick = async () => {
-          try { await api('POST', `/api/herb/orders/${id}/move`, { ...body, location: el.querySelector('#loc').value, note: el.querySelector('#mn').value }); el.remove(); toast('조제완료'); load(); }
+          try { await api('POST', `/api/herb/orders/${id}/move`, { ...body, location: el.querySelector('#loc').value, note: el.querySelector('#mn').value, use: readUse(el, 'done') }); el.remove(); toast('조제완료'); load(); }
           catch (e) { toast(e.message, true); if (e.status === 409) { el.remove(); load(); } }
         };
       });
@@ -316,12 +350,13 @@
           보관 위치: <b>${esc(o.location || '-')}</b> · 조제: ${esc(o.assignee || '-')}<br>
           방법: <b>${esc(o.delivery)}</b></div>
         <label class="f" style="display:flex;gap:8px;align-items:center"><input type="checkbox" id="chk" style="width:auto"> 약 봉투의 이름·처방이 위와 같은 것을 눈으로 확인했어요</label>
+        ${o.delivery === '택배' ? useHTML('sent', (x) => (x.name === '택배 박스' ? 1 : '')) : ''}
         <label class="f"><span>메모 (송장번호 등)</span><input id="mn"></label>
         <div class="okrow"><button class="ab" data-close>취소</button><button class="ab p" id="ok" disabled>${o.delivery === '택배' ? '발송 완료' : '수령 완료'}</button></div>`, (el) => {
         const ok = el.querySelector('#ok');
         el.querySelector('#chk').onchange = (e) => { ok.disabled = !e.target.checked; };
         ok.onclick = async () => {
-          try { await api('POST', `/api/herb/orders/${id}/move`, { ...body, note: el.querySelector('#mn').value }); el.remove(); toast('발송 기록 완료'); load(); }
+          try { await api('POST', `/api/herb/orders/${id}/move`, { ...body, note: el.querySelector('#mn').value, use: o.delivery === '택배' ? readUse(el, 'sent') : [] }); el.remove(); toast('발송 기록 완료'); load(); }
           catch (e) { toast(e.message, true); if (e.status === 409) { el.remove(); load(); } }
         };
       });
@@ -380,19 +415,22 @@
 
   // ---------- 이벤트 ----------
   document.addEventListener('click', async (e) => {
-    const t = e.target.closest('[data-tab],[data-a],[data-move],[data-open],[data-me],[data-stock],[data-stockset]');
+    const t = e.target.closest('[data-tab],[data-a],[data-move],[data-open],[data-me],[data-stock],[data-stockset],[data-stockin],[data-stockmin]');
     if (!t) return;
     if (t.tagName === 'A') e.preventDefault();
     if (t.dataset.tab) { tab = t.dataset.tab; render(); return; }
     if (t.dataset.me) { localStorage.setItem(LS.me, t.dataset.me); render(); return; }
     if (t.dataset.move) return move(t.dataset.move, t.dataset.to);
     if (t.dataset.open) return openDetail(t.dataset.open);
-    if (t.dataset.stock || t.dataset.stockset) {
-      const s = S.stock.find((x) => x.id === (t.dataset.stock || t.dataset.stockset));
-      let qty;
-      if (t.dataset.stockset) { const v = prompt(`${s.name} 현재 수량`, s.qty); if (v === null) return; qty = Number(v); }
-      else qty = Math.max(0, Math.round((s.qty + Number(t.dataset.d)) * 10) / 10);
-      try { await api('PATCH', `/api/herb/stock/${s.id}`, { qty }); load(); } catch (err) { toast(err.message, true); }
+    const sid = t.dataset.stock || t.dataset.stockset || t.dataset.stockin || t.dataset.stockmin;
+    if (sid) {
+      const s = S.stock.find((x) => x.id === sid);
+      let body;
+      if (t.dataset.stockset) { const v = prompt(`${s.name} 직접 센 수량 (${s.unit})`, s.qty); if (v === null || v === '') return; body = { qty: Number(v) }; }
+      else if (t.dataset.stockin) { const v = prompt(`${s.name} 몇 ${s.unit} 들어왔나요?`); if (!v) return; body = { delta: Number(v), reason: '입고' }; }
+      else if (t.dataset.stockmin) { const v = prompt(`${s.name} 최소 수량 (이 아래면 부족 경고)`, s.min || ''); if (v === null) return; body = { min: Number(v) || 0 }; }
+      else body = { delta: Number(t.dataset.d), reason: Number(t.dataset.d) > 0 ? '+1' : '−1' };
+      try { await api('PATCH', `/api/herb/stock/${s.id}`, body); load(); } catch (err) { toast(err.message, true); }
       return;
     }
     switch (t.dataset.a) {
@@ -404,8 +442,10 @@
         catch { toast('복사가 안 되면 글자를 길게 눌러 복사하세요', true); }
         break;
       case 'addstock': {
-        const name = prompt('약 이름'); if (!name) return;
-        try { await api('POST', '/api/herb/stock', { name, qty: 0 }); load(); } catch (err) { toast(err.message, true); }
+        const name = prompt('품목 이름 (예: 아이스팩, 녹용접골탕)'); if (!name) return;
+        const pack = confirm('포장재인가요? (확인 = 포장재, 취소 = 탕약)');
+        const unit = prompt('단위 (예: 장, 개, 박스)', pack ? '개' : '박스') || '';
+        try { await api('POST', '/api/herb/stock', { name, qty: 0, cat: pack ? '포장재' : '탕약', unit }); load(); } catch (err) { toast(err.message, true); }
         break;
       }
       case 'savestaff': {

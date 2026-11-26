@@ -30,6 +30,8 @@ const NEXT = {
   recall: ['done', 'need_rx', 'hold'],
 };
 
+// 포장재: 조제완료·발송 때 사용량이 자동 차감됨
+const DEFAULT_PACK = [['파우치', '장', 0], ['택배 박스', '개', 0], ['쌍화탕 박스', '개', 0]];
 const DEFAULT_STOCK = [
   ['삼소음', 1], ['평진탕', 1], ['기력보강탕', 0], ['녹용접골탕', 2], ['당귀수산', 4],
   ['혈력보강', 0], ['마황행인', 0.2], ['생생탕', 4], ['좋은꿈청심탕', 4], ['생맥산', 1], ['쌍화탕', 19],
@@ -45,6 +47,34 @@ module.exports = function createHerb({ dataDir, password, secret, send, readBody
       stock: DEFAULT_STOCK.map(([name, qty]) => ({ id: rid(), name, qty, unit: '박스', updatedAt: null, by: '' })),
       staff: ['실장', '성열', '수정'],
     };
+  }
+  // 예전 데이터 보정: 구분/최소수량/기록 필드, 기본 포장재 추가
+  db.stockLog = db.stockLog || [];
+  for (const s of db.stock) { s.cat = s.cat || '탕약'; s.min = Number(s.min) || 0; }
+  for (const [name, unit, qty] of DEFAULT_PACK) {
+    if (!db.stock.some((x) => x.name === name)) db.stock.push({ id: rid(), name, qty, unit, cat: '포장재', min: 0, updatedAt: null, by: '' });
+  }
+
+  // 재고 변경은 전부 여기로: 누가, 왜, 얼마나 바꿨는지 남김
+  function stockChange(s, delta, by, reason) {
+    s.qty = Math.round((s.qty + delta) * 10) / 10;
+    s.updatedAt = now(); s.by = by;
+    db.stockLog.push({ at: now(), by, id: s.id, name: s.name, delta: Math.round(delta * 10) / 10, after: s.qty, reason });
+    if (db.stockLog.length > 2000) db.stockLog = db.stockLog.slice(-2000);
+  }
+  // [{id, qty}] 형태의 사용량을 차감하고 카드에 기록
+  function applyUse(o, use, by, reason) {
+    if (!Array.isArray(use)) return [];
+    const done = [];
+    for (const u of use.slice(0, 10)) {
+      const s = db.stock.find((x) => x.id === u.id);
+      const q = Number(u.qty);
+      if (!s || !Number.isFinite(q) || q <= 0 || q > 10000) continue;
+      stockChange(s, -q, by, `${o.patient} ${o.round || ''}회차 ${reason}`);
+      done.push({ name: s.name, qty: q });
+    }
+    if (done.length) o.used = [...(o.used || []), ...done.map((d) => ({ ...d, at: now(), by }))];
+    return done;
   }
 
   function save() {
@@ -97,7 +127,7 @@ module.exports = function createHerb({ dataDir, password, secret, send, readBody
     const needActor = () => { if (!by) { send(res, 400, { error: '먼저 본인 이름을 선택해 주세요.' }); return true; } return false; };
 
     if (req.method === 'GET' && p === '/api/herb/state') {
-      return send(res, 200, { orders: db.orders, stock: db.stock, staff: db.staff, statuses: STATUSES, next: NEXT });
+      return send(res, 200, { orders: db.orders, stock: db.stock, stockLog: db.stockLog.slice(-60).reverse(), staff: db.staff, statuses: STATUSES, next: NEXT });
     }
 
     if (req.method === 'PUT' && p === '/api/herb/staff') {
@@ -167,7 +197,9 @@ module.exports = function createHerb({ dataDir, password, secret, send, readBody
         }
         if (to === 'rx_ready' && o.status === 'compounding') o.assignee = '';
         if (to === 'sent') o.sentAt = now();
-        log(o, by, to, str(b.note, 200));
+        const used = (to === 'done' || to === 'sent') ? applyUse(o, b.use, by, to === 'done' ? '조제' : '발송') : [];
+        const usedTxt = used.length ? ' [사용: ' + used.map((u) => `${u.name} ${u.qty}`).join(', ') + ']' : '';
+        log(o, by, to, str(b.note, 200) + usedTxt);
         save();
         return send(res, 200, o);
       }
@@ -210,8 +242,13 @@ module.exports = function createHerb({ dataDir, password, secret, send, readBody
       const name = str(b.name, 30);
       if (!name) return send(res, 400, { error: '약 이름을 넣어 주세요.' });
       if (db.stock.some((s) => s.name === name)) return send(res, 409, { error: '이미 있는 약이에요.' });
-      const s = { id: rid(), name, qty: Number(b.qty) || 0, unit: str(b.unit, 10) || '박스', updatedAt: now(), by };
-      db.stock.push(s); save();
+      const s = {
+        id: rid(), name, qty: Number(b.qty) || 0, unit: str(b.unit, 10) || '박스',
+        cat: b.cat === '포장재' ? '포장재' : '탕약', min: Math.max(0, Number(b.min) || 0), updatedAt: now(), by,
+      };
+      db.stock.push(s);
+      db.stockLog.push({ at: now(), by, id: s.id, name, delta: s.qty, after: s.qty, reason: '품목 추가' });
+      save();
       return send(res, 201, s);
     }
     const sm = p.match(/^\/api\/herb\/stock\/([a-f0-9]+)$/);
@@ -221,9 +258,23 @@ module.exports = function createHerb({ dataDir, password, secret, send, readBody
       if (needActor()) return;
       if (req.method === 'PATCH') {
         const b = await readBody(req);
-        const q = Number(b.qty);
-        if (!Number.isFinite(q) || q < 0 || q > 100000) return send(res, 400, { error: '수량이 올바르지 않아요.' });
-        s.qty = Math.round(q * 10) / 10; s.updatedAt = now(); s.by = by; save();
+        if (b.min !== undefined) {
+          const m = Number(b.min);
+          if (!Number.isFinite(m) || m < 0 || m > 100000) return send(res, 400, { error: '최소 수량이 올바르지 않아요.' });
+          s.min = m;
+        }
+        if (typeof b.unit === 'string' && str(b.unit, 10)) s.unit = str(b.unit, 10);
+        // delta: 입고(+)/사용(−),  qty: 실사(직접 센 수량)로 맞추기
+        if (b.delta !== undefined) {
+          const d = Number(b.delta);
+          if (!Number.isFinite(d) || d === 0 || Math.abs(d) > 100000) return send(res, 400, { error: '수량이 올바르지 않아요.' });
+          stockChange(s, d, by, str(b.reason, 60) || (d > 0 ? '입고' : '사용'));
+        } else if (b.qty !== undefined) {
+          const q = Number(b.qty);
+          if (!Number.isFinite(q) || q < 0 || q > 100000) return send(res, 400, { error: '수량이 올바르지 않아요.' });
+          stockChange(s, Math.round(q * 10) / 10 - s.qty, by, '실사(직접 셈)');
+        }
+        save();
         return send(res, 200, s);
       }
       if (req.method === 'DELETE') { db.stock = db.stock.filter((x) => x.id !== s.id); save(); return send(res, 200, { ok: true }); }

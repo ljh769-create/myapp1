@@ -66,3 +66,4 @@ pre.sum{white-space:pre-wrap;background:#fff;border:1px solid var(--line);border
 .use input{width:100%;box-sizing:border-box;font:inherit;padding:8px;border:1.5px solid var(--line);border-radius:8px;margin:4px 0}
 .use small{color:var(--mut);font-size:12px}
 .lowrow td{background:#fff4f2}
+.cand{margin-top:6px}.cand button{font-size:14px;padding:6px 10px}

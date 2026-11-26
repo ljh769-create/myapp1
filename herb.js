@@ -200,8 +200,19 @@ module.exports = function createHerb({ dataDir, password, secret, send, readBody
         const used = (to === 'done' || to === 'sent') ? applyUse(o, b.use, by, to === 'done' ? '조제' : '발송') : [];
         const usedTxt = used.length ? ' [사용: ' + used.map((u) => `${u.name} ${u.qty}`).join(', ') + ']' : '';
         log(o, by, to, str(b.note, 200) + usedTxt);
+        // 이번 회차를 보내면 다음 회차 카드를 '처방전 필요'로 자동 생성 (환자마다 매번 새로 만들 필요 없음)
+        let nextCard = null;
+        if (to === 'sent' && o.round && o.total && o.round < o.total && !dupOf(o.patient, o.round + 1)) {
+          nextCard = {
+            id: rid(), patient: o.patient, formula: o.formula, round: o.round + 1, total: o.total,
+            delivery: o.delivery, kind: o.kind, note: '', assignee: '', location: '', sentAt: null,
+            status: 'need_rx', createdAt: now(), createdBy: by, updatedAt: now(), version: 1,
+            history: [{ at: now(), by, from: null, to: 'need_rx', note: `${o.round}회차 발송 후 자동 생성` }],
+          };
+          db.orders.push(nextCard);
+        }
         save();
-        return send(res, 200, o);
+        return send(res, 200, { ...o, nextCard: nextCard ? { id: nextCard.id, round: nextCard.round } : null });
       }
 
       if (!m[2] && req.method === 'PATCH') {

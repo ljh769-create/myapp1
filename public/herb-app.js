@@ -62,7 +62,7 @@
   }
 
   async function load() {
-    try { S = await api('GET', '/api/herb/state'); render(); } catch (e) { if (localStorage.getItem(LS.token)) toast(e.message, true); }
+    try { S = await api('GET', '/api/herb/state'); if (!document.querySelector('.sheet')) render(); openPending(); } catch (e) { if (localStorage.getItem(LS.token)) toast(e.message, true); }
   }
 
   // ---------- 화면 ----------
@@ -251,6 +251,7 @@
         <input id="staffin" class="search" value="${esc(S.staff.join(', '))}">
         <button class="ab p" data-a="savestaff">저장</button>
       </div>
+      <p><a class="ab p" href="/herb-link.html" style="display:inline-block;text-decoration:none">🔗 오케이차트 연결 버튼 설치</a></p>
       <p><button class="ab" data-a="csv">⬇ 전체 목록 엑셀(CSV) 받기</button></p>
       <p><button class="ab w" data-a="logout">로그아웃</button></p>`;
   }
@@ -275,21 +276,23 @@
   }
   const segVal = (el, name) => el.querySelector(`[data-seg="${name}"] .on`)?.dataset.v;
 
-  function openNew() {
+  function openNew(pre = {}) {
+    const chips = (name, list) => (list && list.length > 1 ? `<div class="seg cand" data-cand="${name}">${list.slice(0, 8).map((v) => `<button type="button">${esc(v)}</button>`).join('')}</div>` : '');
     sheet(`<h3>새 한약 카드</h3>
+      ${pre.fromChart ? '<div class="warnbox" style="background:var(--gl);color:var(--gd)">차트 화면에서 읽어 왔어요. <b>이름·처방이 맞는지 확인</b>하고, 후보가 여러 개면 맞는 것을 눌러 주세요.</div>' : ''}
       <form id="nf">
-        <label class="f"><span>환자 이름 *</span><input name="patient" required autocomplete="off"></label>
+        <label class="f"><span>환자 이름 *</span><input name="patient" required autocomplete="off" value="${esc(pre.patient || '')}"></label>${chips('patient', pre.patients)}
         <div id="dupwarn"></div>
-        <label class="f"><span>처방</span><input name="formula" placeholder="예: 당귀수산" list="formulas"></label>
+        <label class="f"><span>처방</span><input name="formula" placeholder="예: 당귀수산" list="formulas" value="${esc(pre.formula || '')}"></label>${chips('formula', pre.formulas)}
         <datalist id="formulas">${S.stock.map((s) => `<option value="${esc(s.name)}">`).join('')}</datalist>
         <div class="two">
           <label class="f"><span>이번 회차</span><input name="round" type="number" min="1" max="99" inputmode="numeric"></label>
           <label class="f"><span>총 회차</span><input name="total" type="number" min="1" max="99" inputmode="numeric" value="6"></label>
         </div>
-        <div class="f"><span>처방전</span>${segHTML('rx', [['0', '아직 없음'], ['1', '받았음']], '0')}</div>
+        <div class="f"><span>처방전</span>${segHTML('rx', [['0', '아직 없음'], ['1', '받았음']], pre.fromChart ? '1' : '0')}</div>
         <div class="f"><span>구분</span>${segHTML('kind', [['비급여', '비급여'], ['자보', '자보'], ['기타', '기타']], '비급여')}</div>
         <div class="f"><span>받는 방법</span>${segHTML('delivery', [['택배', '택배'], ['직수', '직수'], ['내원', '내원']], '택배')}</div>
-        <label class="f"><span>메모</span><textarea name="note" rows="2" placeholder="예: 전화로 지을 예정, 처방전 있는지 확인"></textarea></label>
+        <label class="f"><span>메모</span><textarea name="note" rows="2" placeholder="예: 전화로 지을 예정, 처방전 있는지 확인">${esc(pre.note || '')}</textarea></label>
         <div class="err" id="ne"></div>
         <div class="okrow"><button type="button" class="ab" data-close>취소</button><button class="ab p">만들기</button></div>
       </form>`, (el) => {
@@ -301,7 +304,26 @@
         el.querySelector('#dupwarn').innerHTML = list.length
           ? `<div class="warnbox">⚠ ${esc(nm)}님 진행 중 카드가 이미 있어요:<br>${list.map((o) => `${esc(roundTxt(o) || '회차 없음')} ${esc(o.formula)} — <b>${esc(S.statuses[o.status])}</b>`).join('<br>')}<br>새로 만들지 말고 기존 카드를 쓰세요.</div>` : '';
       };
+      // 이미 진행했던 환자면 다음 회차·처방·받는 방법을 자동으로 채움
+      const fillNext = () => {
+        const nm = f.patient.value.trim();
+        const past = S.orders.filter((o) => o.patient === nm).sort((a, b) => (b.round || 0) - (a.round || 0) || b.updatedAt.localeCompare(a.updatedAt))[0];
+        if (!past) return;
+        if (!f.round.value && past.round && (!past.total || past.round < past.total)) f.round.value = past.round + 1;
+        if (past.total) f.total.value = past.total;
+        if (!f.formula.value && past.formula) f.formula.value = past.formula;
+        const setSeg = (n, v) => el.querySelectorAll(`[data-seg="${n}"] button`).forEach((b) => b.classList.toggle('on', b.dataset.v === v));
+        setSeg('delivery', past.delivery); setSeg('kind', past.kind);
+      };
+      el.querySelectorAll('[data-cand]').forEach((g) => g.addEventListener('click', (e) => {
+        const b = e.target.closest('button'); if (!b) return;
+        f[g.dataset.cand].value = b.textContent;
+        g.querySelectorAll('button').forEach((x) => x.classList.toggle('on', x === b));
+        if (g.dataset.cand === 'patient') { warn(); fillNext(); }
+      }));
       f.patient.addEventListener('input', warn);
+      f.patient.addEventListener('change', fillNext);
+      if (f.patient.value) { warn(); fillNext(); }
       f.onsubmit = async (e) => {
         e.preventDefault();
         const body = {
@@ -318,8 +340,26 @@
           } else el.querySelector('#ne').textContent = err.message;
         }
       };
-      f.patient.focus();
+      if (!f.patient.value) f.patient.focus();
     });
+  }
+
+  // 차트 버튼(북마클릿)이 #new=... 으로 보낸 내용 받기. 주소 뒤 # 부분은 서버로 전송되지 않음
+  let pendingNew = null;
+  try {
+    const m = location.hash.match(/^#new=(.+)$/);
+    if (m) { pendingNew = { ...JSON.parse(decodeURIComponent(m[1])), fromChart: true }; history.replaceState(null, '', location.pathname); }
+  } catch { pendingNew = null; }
+  function openPending() {
+    if (!pendingNew || !localStorage.getItem(LS.token) || !me() || !S.staff.length) return;
+    const p = pendingNew; pendingNew = null;
+    tab = 'board'; render();
+    const clean = (a) => [...new Set((a || []).filter((x) => x != null).map((x) => String(x).trim()).filter(Boolean))];
+    const patients = clean([p.patient, ...(p.patients || [])]);
+    const formulas = clean([p.formula, ...(p.formulas || [])]);
+    // 재고 목록에 있는 처방명을 우선
+    formulas.sort((a, b) => S.stock.some((s) => s.name === b) - S.stock.some((s) => s.name === a));
+    openNew({ fromChart: true, patient: patients[0] || '', patients, formula: formulas[0] || '', formulas, note: p.chartNo ? `차트번호 ${p.chartNo}` : '' });
   }
 
   async function move(id, to) {
@@ -356,7 +396,10 @@
         const ok = el.querySelector('#ok');
         el.querySelector('#chk').onchange = (e) => { ok.disabled = !e.target.checked; };
         ok.onclick = async () => {
-          try { await api('POST', `/api/herb/orders/${id}/move`, { ...body, note: el.querySelector('#mn').value, use: o.delivery === '택배' ? readUse(el, 'sent') : [] }); el.remove(); toast('발송 기록 완료'); load(); }
+          try {
+            const r = await api('POST', `/api/herb/orders/${id}/move`, { ...body, note: el.querySelector('#mn').value, use: o.delivery === '택배' ? readUse(el, 'sent') : [] });
+            el.remove(); toast(r.nextCard ? `발송 완료 · ${o.patient}님 ${r.nextCard.round}회차 카드 자동 생성` : '발송 기록 완료'); load();
+          }
           catch (e) { toast(e.message, true); if (e.status === 409) { el.remove(); load(); } }
         };
       });
@@ -419,7 +462,7 @@
     if (!t) return;
     if (t.tagName === 'A') e.preventDefault();
     if (t.dataset.tab) { tab = t.dataset.tab; render(); return; }
-    if (t.dataset.me) { localStorage.setItem(LS.me, t.dataset.me); render(); return; }
+    if (t.dataset.me) { localStorage.setItem(LS.me, t.dataset.me); render(); openPending(); return; }
     if (t.dataset.move) return move(t.dataset.move, t.dataset.to);
     if (t.dataset.open) return openDetail(t.dataset.open);
     const sid = t.dataset.stock || t.dataset.stockset || t.dataset.stockin || t.dataset.stockmin;

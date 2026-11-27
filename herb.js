@@ -37,7 +37,17 @@ const DEFAULT_STOCK = [
   ['혈력보강', 0], ['마황행인', 0.2], ['생생탕', 4], ['좋은꿈청심탕', 4], ['생맥산', 1], ['쌍화탕', 19],
 ];
 
-module.exports = function createHerb({ dataDir, password, secret, send, readBody, limited, safeEq }) {
+// 출발일부터 CYCLE 일마다 확인 알람
+const CYCLE = 15;
+const kstDate = (t = Date.now()) => new Date(new Date(t).getTime() + 9 * 3600 * 1000).toISOString().slice(0, 10);
+const kstHour = () => new Date(Date.now() + 9 * 3600 * 1000).getUTCHours();
+const dayDiff = (a, b) => Math.round((Date.parse(a) - Date.parse(b)) / 86400000);
+const addDays = (d, n) => new Date(Date.parse(d) + n * 86400000).toISOString().slice(0, 10);
+const isDate = (d) => typeof d === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(d) && !Number.isNaN(Date.parse(d)) && addDays(d, 0) === d;
+// 외부(텔레그램)로 나가는 이름은 가립니다: 김철수 → 김○수
+const maskName = (n) => (n.length <= 1 ? n : n.length === 2 ? n[0] + '○' : n[0] + '○'.repeat(n.length - 2) + n[n.length - 1]);
+
+module.exports = function createHerb({ dataDir, password, secret, send, readBody, limited, safeEq, clinicName = '', publicUrl = '', notify = null }) {
   const FILE = path.join(dataDir, 'herb.json');
   let db;
   try { db = JSON.parse(fs.readFileSync(FILE, 'utf8')); } catch { db = null; }
@@ -50,6 +60,11 @@ module.exports = function createHerb({ dataDir, password, secret, send, readBody
   }
   // 예전 데이터 보정: 구분/최소수량/기록 필드, 기본 포장재 추가
   db.stockLog = db.stockLog || [];
+  // 이름은 환자가 입력한 문자열이라, 기본 객체 속성과 섞이지 않게 prototype 없는 객체에 담음
+  const dict = (o) => Object.assign(Object.create(null), o);
+  db.departures = dict(db.departures); // 직접 등록한 출발일
+  db.follow = dict(db.follow);         // 알람 확인/종료 상태
+  db.phones = dict(db.phones);
   for (const s of db.stock) { s.cat = s.cat || '탕약'; s.min = Number(s.min) || 0; }
   for (const [name, unit, qty] of DEFAULT_PACK) {
     if (!db.stock.some((x) => x.name === name)) db.stock.push({ id: rid(), name, qty, unit, cat: '포장재', min: 0, updatedAt: null, by: '' });
@@ -109,6 +124,49 @@ module.exports = function createHerb({ dataDir, password, secret, send, readBody
   const dupOf = (patient, round, exceptId) => db.orders.find((x) =>
     x.id !== exceptId && OPEN.includes(x.status) && x.patient === patient && round != null && x.round === round);
 
+  // 환자별 "가장 최근에 기록한 출발"을 기준으로 15일 알람 계산
+  function followups(today = kstDate()) {
+    const latest = new Map();
+    const put = (patient, c) => { const cur = latest.get(patient); if (!cur || c.rec > cur.rec) latest.set(patient, c); };
+    for (const o of db.orders) {
+      if (o.status === 'sent' && o.sentAt) put(o.patient, { base: kstDate(o.sentAt), rec: o.sentAt, round: o.round, total: o.total, manual: false });
+    }
+    for (const [patient, d] of Object.entries(db.departures)) put(patient, { base: d.date, rec: d.setAt, round: null, total: null, manual: true });
+    const list = [];
+    for (const [patient, c] of latest) {
+      const f = db.follow[patient] && db.follow[patient].base === c.base ? db.follow[patient] : null;
+      if (f && f.stopped) continue;
+      const days = Math.max(0, dayDiff(today, c.base));
+      const nextNo = ((f && f.ack) || 0) + 1;       // 아직 확인 안 한 첫 번째 알람
+      const dueDate = addDays(c.base, nextNo * CYCLE);
+      const due = today >= dueDate;
+      list.push({
+        patient, base: c.base, days, round: c.round, total: c.total, manual: c.manual,
+        dueDate, due, late: due ? dayDiff(today, dueDate) : 0, left: due ? 0 : dayDiff(dueDate, today),
+        phone: db.phones[patient] || '', ackBy: (f && f.ackBy) || '',
+      });
+    }
+    return list.sort((a, b) => a.dueDate.localeCompare(b.dueDate));
+  }
+
+  // 직원 텔레그램방에 하루 한 번(오전 9시 이후) 확인할 환자 알림
+  let sending = false;
+  async function digest() {
+    if (!notify || sending) return;
+    const today = kstDate(), hour = kstHour();
+    if (hour < 9 || hour >= 20 || db.lastDigest === today) return;
+    const due = followups(today).filter((x) => x.due);
+    if (!due.length) return;
+    sending = true;
+    try {
+      const lines = [`⏰ 한약 ${CYCLE}일 확인 ${due.length}명`,
+        ...due.slice(0, 40).map((x) => `· ${maskName(x.patient)} — 출발 ${x.base.slice(5).replace('-', '.')} (${x.days}일째)${x.late ? ` · ${x.late}일 지남` : ''}`),
+        due.length > 40 ? `외 ${due.length - 40}명` : '',
+        publicUrl ? `확인하기: ${publicUrl}/herb` : ''].filter(Boolean);
+      if (await notify(lines.join('\n'))) { db.lastDigest = today; save(); }
+    } finally { sending = false; }
+  }
+
   async function handle(req, res, url) {
     const p = url.pathname;
     const ip = req.socket.remoteAddress || '';
@@ -127,7 +185,7 @@ module.exports = function createHerb({ dataDir, password, secret, send, readBody
     const needActor = () => { if (!by) { send(res, 400, { error: '먼저 본인 이름을 선택해 주세요.' }); return true; } return false; };
 
     if (req.method === 'GET' && p === '/api/herb/state') {
-      return send(res, 200, { orders: db.orders, stock: db.stock, stockLog: db.stockLog.slice(-60).reverse(), staff: db.staff, statuses: STATUSES, next: NEXT });
+      return send(res, 200, { orders: db.orders, stock: db.stock, stockLog: db.stockLog.slice(-60).reverse(), staff: db.staff, statuses: STATUSES, next: NEXT, followups: followups(), today: kstDate(), cycle: CYCLE, clinicName });
     }
 
     if (req.method === 'PUT' && p === '/api/herb/staff') {
@@ -136,6 +194,43 @@ module.exports = function createHerb({ dataDir, password, secret, send, readBody
       if (!list || !list.length) return send(res, 400, { error: '이름을 한 명 이상 넣어 주세요.' });
       db.staff = list; save();
       return send(res, 200, { staff: db.staff });
+    }
+
+    // 15일 알람: 출발 등록 / 확인 / 종료 / 연락처
+    const fm = p.match(/^\/api\/herb\/follow(\/ack|\/stop|\/phone)?$/);
+    if (fm && req.method === 'POST') {
+      if (needActor()) return;
+      const b = await readBody(req);
+      const patient = str(b.patient, 30);
+      if (!patient) return send(res, 400, { error: '환자 이름을 넣어 주세요.' });
+      const phone = str(b.phone, 20).replace(/[^0-9+]/g, '');
+      if (!fm[1]) {
+        const date = b.date || kstDate();
+        if (!isDate(date)) return send(res, 400, { error: '출발일이 올바르지 않아요.' });
+        if (date > kstDate()) return send(res, 400, { error: '출발일은 오늘이나 지난 날짜로 넣어 주세요.' });
+        db.departures[patient] = { date, setAt: now(), by };
+        delete db.follow[patient];
+        if (phone) db.phones[patient] = phone;
+      } else {
+        const item = followups().find((x) => x.patient === patient);
+        if (!item) return send(res, 404, { error: '알람을 찾을 수 없어요. 새로고침 해주세요.' });
+        if (fm[1] === '/phone') {
+          if (phone) db.phones[patient] = phone; else delete db.phones[patient];
+        } else {
+          if (b.base !== item.base || (fm[1] === '/ack' && b.dueDate !== item.dueDate)) {
+            return send(res, 409, { error: '방금 다른 직원이 바꿨어요. 새로고침 후 다시 해주세요.' });
+          }
+          if (fm[1] === '/ack') {
+            if (!item.due) return send(res, 400, { error: '아직 알람 날짜가 아니에요.' });
+            // 밀린 알람이 여러 번이어도 한 번 확인하면 다음 15일 시점으로 넘어감
+            db.follow[patient] = { base: item.base, ack: Math.floor(item.days / CYCLE), ackBy: by, ackAt: now() };
+          } else {
+            db.follow[patient] = { base: item.base, stopped: true, ackBy: by, ackAt: now() };
+          }
+        }
+      }
+      save();
+      return send(res, 200, { followups: followups() });
     }
 
     // 새 카드
@@ -311,5 +406,5 @@ module.exports = function createHerb({ dataDir, password, secret, send, readBody
     return send(res, 404, { error: 'not found' });
   }
 
-  return { handle };
+  return { handle, digest };
 };

@@ -2,8 +2,8 @@
 (() => {
   const $app = document.getElementById('app');
   const LS = { token: 'herbToken', me: 'herbMe' };
-  let S = { orders: [], stock: [], staff: [], statuses: {}, next: {} };
-  let tab = 'board';
+  let S = { orders: [], stock: [], staff: [], statuses: {}, next: {}, followups: [] };
+  let tab = 'alarm';
   let q = '';
   let showSent = false;
 
@@ -77,13 +77,15 @@
           <div class="me">지금 사용자: <b>${esc(me())}</b> · <a href="#" data-a="whoami">바꾸기</a></div>
         </div>
         <div class="htabs">
-          ${[['board', `진행판`], ['today', '오늘 요약(단톡용)'], ['stock', '상비 재고'], ['settings', '설정']]
+          ${[['alarm', `⏰ 15일 알람${dueCount() ? ` (${dueCount()})` : ''}`], ['board', `진행판`], ['today', '오늘 요약(단톡용)'], ['stock', '상비 재고'], ['settings', '설정']]
             .map(([k, l]) => `<button class="${tab === k ? 'on' : ''}" data-tab="${k}">${l}</button>`).join('')}
         </div>
         <div id="body"></div>
       </div>
-      ${tab === 'board' ? '<button class="fab" data-a="new">＋ 새 한약</button>' : ''}`;
+      ${tab === 'board' ? '<button class="fab" data-a="new">＋ 새 한약</button>' : ''}
+      ${tab === 'alarm' ? '<button class="fab" data-a="depart">＋ 출발 등록</button>' : ''}`;
     const body = $app.querySelector('#body');
+    if (tab === 'alarm') body.innerHTML = alarmHTML();
     if (tab === 'board') body.innerHTML = boardHTML(counts);
     if (tab === 'today') body.innerHTML = todayHTML();
     if (tab === 'stock') body.innerHTML = stockHTML();
@@ -124,6 +126,66 @@
         </div>
         <p class="hint">이름이 없으면 <b>설정</b>에서 추가할 수 있어요. 먼저 아무 이름이나 골라 들어간 뒤 바꿔 주세요.</p>
       </div>`;
+  }
+
+  // ---------- 15일 알람 ----------
+  const dueCount = () => (S.followups || []).filter((x) => x.due).length;
+  const md = (d) => `${Number(d.slice(5, 7))}.${Number(d.slice(8, 10))}`;
+  const smsText = (x) => `[${S.clinicName || '한의원'}] ${x.patient}님, 한약 보내드린 지 ${x.days}일 되었어요. 드시면서 불편한 점은 없으신가요? 편하게 연락 주세요.`;
+  function followCard(x) {
+    const k = esc(x.patient);
+    return `<div class="hcard ${x.due ? 'recall' : 'done'}">
+      <div><span class="nm">${k}</span>${x.round ? `<span class="rd">${x.round}${x.total ? '/' + x.total : ''}회차</span>` : ''}
+        <span class="badge ${x.due ? 'r' : ''}">${x.due ? (x.late ? `${x.late}일 지남` : '오늘 확인') : `${x.left}일 남음`}</span></div>
+      <div class="meta">출발 ${md(x.base)} · 오늘 ${x.days}일째 · 알람일 ${md(x.dueDate)}${x.ackBy ? ' · 지난 확인 ' + esc(x.ackBy) : ''}</div>
+      <div class="acts">
+        ${x.due ? `<button class="ab p" data-follow="ack" data-p="${k}">확인 완료</button>` : ''}
+        ${x.phone ? `<a class="ab" href="sms:${esc(x.phone)}?&body=${encodeURIComponent(smsText(x))}">📱 문자 보내기</a>` : `<button class="ab" data-follow="phone" data-p="${k}">연락처 넣기</button>`}
+        <button class="ab" data-follow="copy" data-p="${k}">문구 복사</button>
+        <button class="ab" data-follow="again" data-p="${k}">새로 출발</button>
+        <button class="ab w" data-follow="stop" data-p="${k}">알람 끝내기</button>
+        ${x.phone ? `<button class="ab" data-follow="phone" data-p="${k}">번호 수정</button>` : ''}
+      </div></div>`;
+  }
+  function alarmHTML() {
+    const list = S.followups || [], due = list.filter((x) => x.due), later = list.filter((x) => !x.due);
+    return `<div class="rule">한약이 <b>출발한 날</b>부터 <b>${S.cycle || 15}일마다</b> 알람이 떠요. 환자에게 연락한 뒤 <b>확인 완료</b>를 누르면 다음 ${S.cycle || 15}일 뒤에 다시 알려드려요. 진행판에서 발송한 약은 자동으로 들어와요.</div>
+      <div class="cols">
+        <div class="col need_rx"><h2>지금 확인할 환자 <span>${due.length}</span></h2>${due.map(followCard).join('') || '<div class="empty">없음</div>'}</div>
+        <div class="col"><h2>다음 알람 대기 <span>${later.length}</span></h2>${later.map(followCard).join('') || '<div class="empty">없음</div>'}</div>
+      </div>`;
+  }
+  function openDepart(name = '') {
+    sheet(`<h3>한약 출발 등록</h3>
+      <form id="df">
+        <label class="f"><span>환자 이름 *</span><input name="patient" required maxlength="30" autocomplete="off" value="${esc(name)}"></label>
+        <label class="f"><span>한약 출발일 (이름 넣는 날이 아니라 약이 나간 날)</span><input name="date" type="date" required max="${S.today}" value="${S.today}"></label>
+        <label class="f"><span>휴대폰 번호 (선택 · 문자 보낼 때만)</span><input name="phone" type="tel" maxlength="20"></label>
+        <div class="err" id="de"></div>
+        <div class="okrow"><button type="button" class="ab" data-close>취소</button><button class="ab p">등록</button></div>
+      </form>`, (el) => {
+      const f = el.querySelector('#df');
+      f.onsubmit = async (e) => {
+        e.preventDefault();
+        try { await api('POST', '/api/herb/follow', { patient: f.patient.value, date: f.date.value, phone: f.phone.value }); el.remove(); toast('등록했어요'); load(); }
+        catch (err) { el.querySelector('#de').textContent = err.message; }
+      };
+    });
+  }
+  async function follow(act, name) {
+    const x = (S.followups || []).find((y) => y.patient === name);
+    if (!x) return load();
+    if (act === 'again') return openDepart(name);
+    if (act === 'copy') {
+      try { await navigator.clipboard.writeText(smsText(x)); toast('문구를 복사했어요'); } catch { prompt('아래 문구를 복사하세요', smsText(x)); }
+      return;
+    }
+    const body = { patient: name, base: x.base, dueDate: x.dueDate };
+    if (act === 'phone') { const v = prompt(`${name}님 휴대폰 번호 (비우면 삭제)`, x.phone); if (v === null) return; body.phone = v; }
+    if (act === 'stop' && !confirm(`${name}님 알람을 끝낼까요? (다시 출발 등록하면 새로 시작돼요)`)) return;
+    try { await api('POST', `/api/herb/follow/${act}`, body); toast(act === 'ack' ? '확인했어요' : act === 'stop' ? '알람을 끝냈어요' : '저장했어요'); }
+    catch (e) { toast(e.message, true); }
+    load();
   }
 
   // ---------- 진행판 ----------
@@ -188,6 +250,7 @@
     return [
       `< ${String(d.getFullYear()).slice(2)}. ${d.getMonth() + 1}. ${d.getDate()}. ${wd} >`,
       '',
+      ...(dueCount() ? [sec('⏰ 15일 확인', S.followups.filter((x) => x.due).map((x) => `${x.patient} (출발 ${md(x.base)}, ${x.days}일째)`)), ''] : []),
       sec('필요처방전', by('need_rx').map((o) => line(o, o.note ? ` → ${o.note}` : ''))),
       '',
       sec('처방전 받음 (조제 전)', by('rx_ready').map((o) => line(o))),
@@ -458,11 +521,12 @@
 
   // ---------- 이벤트 ----------
   document.addEventListener('click', async (e) => {
-    const t = e.target.closest('[data-tab],[data-a],[data-move],[data-open],[data-me],[data-stock],[data-stockset],[data-stockin],[data-stockmin]');
+    const t = e.target.closest('[data-tab],[data-a],[data-move],[data-open],[data-me],[data-stock],[data-stockset],[data-stockin],[data-stockmin],[data-follow]');
     if (!t) return;
     if (t.tagName === 'A') e.preventDefault();
     if (t.dataset.tab) { tab = t.dataset.tab; render(); return; }
     if (t.dataset.me) { localStorage.setItem(LS.me, t.dataset.me); render(); openPending(); return; }
+    if (t.dataset.follow) return follow(t.dataset.follow, t.dataset.p);
     if (t.dataset.move) return move(t.dataset.move, t.dataset.to);
     if (t.dataset.open) return openDetail(t.dataset.open);
     const sid = t.dataset.stock || t.dataset.stockset || t.dataset.stockin || t.dataset.stockmin;
@@ -479,6 +543,7 @@
     switch (t.dataset.a) {
       case 'whoami': localStorage.removeItem(LS.me); render(); break;
       case 'new': openNew(); break;
+      case 'depart': openDepart(); break;
       case 'togglesent': showSent = !showSent; render(); break;
       case 'copy':
         try { await navigator.clipboard.writeText(summaryText()); toast('복사했어요. 단톡방에 붙여넣으세요'); }

@@ -1,0 +1,73 @@
+<!doctype html>
+<html lang="ko">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="robots" content="noindex">
+  <title>오케이차트 연결 버튼 설치</title>
+  <link rel="stylesheet" href="/style.css">
+  <link rel="stylesheet" href="/herb.css">
+  <style>
+    .step{background:#fff;border:1px solid var(--line);border-radius:14px;padding:14px 16px;margin:12px 0}
+    .step h3{margin:0 0 8px}
+    .bm{display:inline-block;font-size:18px;font-weight:700;padding:14px 22px;border-radius:12px;background:var(--g);color:#fff;text-decoration:none;cursor:grab}
+    textarea{width:100%;box-sizing:border-box;height:90px;font-size:12px;border:1.5px solid var(--line);border-radius:10px;padding:8px}
+    .mock{border:2px dashed var(--line);border-radius:12px;padding:12px;background:#fafafa;font-size:14px}
+    .mock table{border-collapse:collapse}.mock td,.mock th{border:1px solid #ccc;padding:4px 8px}
+    ol{padding-left:20px}li{margin:6px 0}
+  </style>
+</head>
+<body class="herbbody">
+  <div class="hw">
+    <h1>🔗 오케이차트 → 한약 카드 버튼</h1>
+    <p class="sub">스마트애니웨어 처방 화면에서 이 버튼을 누르면 <b>환자 이름·처방을 읽어 한약 앱의 새 카드에 채워</b> 줍니다. 직원은 확인하고 "만들기"만 누르면 돼요.<br>
+      차트 아이디·비밀번호는 읽지도 저장하지도 않습니다. 읽은 내용은 이 브라우저 안에서 한약 앱 화면으로만 넘어갑니다.</p>
+
+    <div class="step">
+      <h3>💻 PC (크롬·엣지)</h3>
+      <ol>
+        <li><b>Ctrl + Shift + B</b> 를 눌러 즐겨찾기 줄을 보이게 합니다.</li>
+        <li>아래 초록 버튼을 <b>마우스로 끌어서 즐겨찾기 줄에 놓습니다.</b> (클릭 X)</li>
+        <li>스마트애니웨어에서 환자 처방 화면을 연 상태로 즐겨찾기 줄의 <b>[한약카드]</b>를 누릅니다.</li>
+      </ol>
+      <p><a id="bm" class="bm" href="#">한약카드</a></p>
+      <p class="hint">이름을 더 정확히 잡으려면, 누르기 전에 차트 화면에서 <b>환자 이름을 마우스로 드래그(선택)</b>해 두세요. 선택한 글자를 1순위로 씁니다.</p>
+    </div>
+
+    <div class="step">
+      <h3>📱 휴대폰 (크롬)</h3>
+      <ol>
+        <li>아래 <b>코드 복사</b>를 누릅니다.</li>
+        <li>아무 페이지에서나 ☆(북마크 추가) → 방금 만든 북마크 <b>수정</b>.</li>
+        <li>이름은 <b>한약카드</b>, 주소(URL)는 전부 지우고 <b>복사한 코드 붙여넣기</b> → 저장.</li>
+        <li>차트 처방 화면에서 <b>주소창에 "한약카드"</b>를 입력하고, 아래 목록에 뜨는 북마크(★ 한약카드)를 누릅니다.</li>
+      </ol>
+      <p><button class="ab p" id="copy">📋 코드 복사</button></p>
+      <textarea id="code" readonly></textarea>
+    </div>
+
+    <div class="step">
+      <h3>🧪 연습해 보기 (가짜 차트 화면)</h3>
+      <div class="mock">
+        <table><tr><th>차트번호</th><td>00123</td><th>성명</th><td>홍예시</td></tr>
+          <tr><th>처방명</th><td colspan="3">당귀수산 가감</td></tr></table>
+        <p>진단: 염좌 · 처방: 당귀수산 1일 3회 · 다음 내원 예정</p>
+      </div>
+      <p><button class="ab" id="try">이 화면에서 버튼 실행해 보기</button></p>
+    </div>
+
+    <p><a href="/herb">← 한약 진행으로 돌아가기</a></p>
+  </div>
+  <script>
+    fetch('/okchart-bookmarklet.js').then((r) => r.text()).then((src) => {
+      const code = src.replace('__APP__', location.origin);
+      const href = 'javascript:' + encodeURIComponent(code.replace(/\/\*[\s\S]*?\*\//g, '').replace(/\n\s*/g, '\n'));
+      document.getElementById('bm').href = href;
+      document.getElementById('bm').onclick = (e) => { e.preventDefault(); alert('클릭하지 말고 즐겨찾기 줄로 끌어다 놓아 주세요.'); };
+      document.getElementById('code').value = href;
+      document.getElementById('copy').onclick = () => navigator.clipboard.writeText(href).then(() => alert('복사했어요. 북마크 주소에 붙여넣으세요.'));
+      document.getElementById('try').onclick = () => new Function(code)();
+    });
+  </script>
+</body>
+</html>

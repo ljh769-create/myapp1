@@ -17,6 +17,8 @@ const TG_API = process.env.TELEGRAM_API_BASE || 'https://api.telegram.org';
 const PUBLIC_URL = (process.env.PUBLIC_URL || process.env.RENDER_EXTERNAL_URL || '').replace(/\/$/, '');
 const CLINIC_NAME = process.env.CLINIC_NAME || '';
 const SECRET = process.env.SESSION_SECRET || crypto.randomBytes(32).toString('hex');
+// 한약 진행 관리(/herb)용 직원 공용 비밀번호. 없으면 관리자 비밀번호를 같이 씁니다.
+const STAFF_PASSWORD = process.env.STAFF_PASSWORD || ADMIN_PASSWORD;
 
 fs.mkdirSync(DATA_DIR, { recursive: true });
 let reviews = [];
@@ -126,6 +128,16 @@ function cleanReview(b) {
   };
 }
 
+function sendTelegram(text) {
+  if (!TG_TOKEN || !TG_CHAT) return Promise.resolve(false);
+  return fetch(`${TG_API}/bot${TG_TOKEN}/sendMessage`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ chat_id: TG_CHAT, text, disable_web_page_preview: true }),
+    signal: AbortSignal.timeout(8000),
+  }).then((res) => { if (!res.ok) console.error('텔레그램 알림 실패:', res.status); return res.ok; })
+    .catch((e) => { console.error('텔레그램 알림 오류:', e.message); return false; });
+}
+
 // 알림에는 개인정보(자유 서술, 이름, 연락처)를 넣지 않고 점수 요약만 보냅니다.
 function notifyTelegram(r) {
   if (!TG_TOKEN || !TG_CHAT) return;
@@ -140,20 +152,21 @@ function notifyTelegram(r) {
     r.contact.phone ? '📞 연락 희망 환자' : '',
     PUBLIC_URL ? `답글 달기: ${PUBLIC_URL}/admin` : '',
   ].filter(Boolean);
-  fetch(`${TG_API}/bot${TG_TOKEN}/sendMessage`, {
-    method: 'POST', headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ chat_id: TG_CHAT, text: lines.join('\n'), disable_web_page_preview: true }),
-    signal: AbortSignal.timeout(8000),
-  }).then((res) => { if (!res.ok) console.error('텔레그램 알림 실패:', res.status); })
-    .catch((e) => console.error('텔레그램 알림 오류:', e.message));
+  sendTelegram(lines.join('\n'));
 }
 
 // 환자에게 보여줄 공개 정보(답글)만 반환
 const publicView = (r) => ({ id: r.id, createdAt: r.createdAt, reply: r.reply || null });
 
+const herb = require('./herb')({
+  dataDir: DATA_DIR, password: STAFF_PASSWORD, secret: SECRET, send, readBody, limited, safeEq,
+  clinicName: CLINIC_NAME, publicUrl: PUBLIC_URL, notify: TG_TOKEN && TG_CHAT ? sendTelegram : null,
+});
+
 async function handleApi(req, res, url) {
   const ip = req.socket.remoteAddress || '';
   const p = url.pathname;
+  if (p.startsWith('/api/herb/')) return herb.handle(req, res, url);
 
   if (req.method === 'POST' && p === '/api/reviews') {
     if (limited(ip, 'post', 10, 3600 * 1000)) return send(res, 429, { error: '잠시 후 다시 시도해 주세요.' });
@@ -233,6 +246,7 @@ function serveStatic(req, res, url) {
   let rel = decodeURIComponent(url.pathname);
   if (rel === '/') rel = '/index.html';
   if (rel === '/admin') rel = '/admin.html';
+  if (rel === '/herb') rel = '/herb.html';
   const file = path.normalize(path.join(PUBLIC_DIR, rel));
   if (!file.startsWith(PUBLIC_DIR + path.sep)) return send(res, 403, 'forbidden');
   fs.readFile(file, (err, data) => {
@@ -260,7 +274,9 @@ http.createServer(async (req, res) => {
     send(res, 500, { error: '서버에 저장하지 못했어요. 잠시 후 다시 시도해 주세요.' });
   }
 }).listen(PORT, () => {
-  console.log(`서버 실행 중: http://localhost:${PORT}  (관리자: /admin)`);
+  const alarm = () => herb.digest().catch((e) => console.error('15일 알람 오류:', e.message));
+  alarm(); setInterval(alarm, 10 * 60 * 1000).unref();
+  console.log(`서버 실행 중: http://localhost:${PORT}  (관리자: /admin, 한약 진행: /herb)`);
   console.log(TG_TOKEN && TG_CHAT ? '텔레그램 알림: 켜짐' : '텔레그램 알림: 꺼짐 (TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID 설정 시 켜짐)');
   if (ADMIN_PASSWORD === 'changeme') console.warn('⚠ ADMIN_PASSWORD 환경변수를 꼭 바꿔주세요!');
 });

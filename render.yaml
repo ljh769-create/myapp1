@@ -31,6 +31,8 @@ services:
         sync: false          # 발신번호 (문자 대체발송)
       - key: ALIMTALK_TPL_SHIPPED
         sync: false          # 승인된 '한약 발송 안내' 템플릿 ID
+      - key: ALIMTALK_TPL_WELCOME
+        sync: false          # 승인된 '결제 첫날 시작 인사' 템플릿 ID
       - key: ALIMTALK_TPL_PHOTO
         sync: false          # 승인된 '조제 사진 안내' 템플릿 ID
       - key: ALIMTALK_TPL_FOLLOWUP

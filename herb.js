@@ -44,6 +44,10 @@ const DEFAULT_STOCK = [
 
 // 출발일부터 CYCLE 일마다 확인 알람
 const CYCLE = 15;
+// 결제 패키지: 총 일수 (총 회차 = 일수 ÷ CYCLE, 올림)
+const PKG_PRESETS = [30, 60, 90, 180];
+const pkgDaysOf = (v) => { const n = Math.round(Number(v)); return Number.isFinite(n) && n >= CYCLE && n <= 730 ? n : 0; };
+const pkgRounds = (days) => Math.ceil(days / CYCLE);
 const kstDate = (t = Date.now()) => new Date(new Date(t).getTime() + 9 * 3600 * 1000).toISOString().slice(0, 10);
 const kstHour = () => new Date(Date.now() + 9 * 3600 * 1000).getUTCHours();
 const dayDiff = (a, b) => Math.round((Date.parse(a) - Date.parse(b)) / 86400000);
@@ -188,6 +192,24 @@ module.exports = function createHerb({ dataDir, password, secret, send, readBody
     }
     if (changed) save();
   }
+  // 결제 첫날 시작 인사: 이 환자의 첫 카드(또는 1회차)일 때 한 번
+  async function notifyWelcome(o, by) {
+    const c = contactOf(o.patient);
+    const why = !alimtalk.enabled('welcome') ? '알림톡 미설정' : !c.phone ? '연락처 없음' : !c.consent ? '수신동의 없음' : '';
+    const rec = { at: now(), type: '시작인사', by, ok: false, error: why };
+    if (!why) {
+      const r = await alimtalk.send('welcome', c.phone, {
+        '#{이름}': o.patient, '#{처방}': o.formula || '한약',
+        '#{기간}': o.pkgDays ? `${o.pkgDays}일` : (o.total ? `${o.total * CYCLE}일` : '처방 기간'),
+        '#{총회차}': o.total ? `${o.total}회` : '-', '#{종료일}': o.pkgEnd || (o.total ? addDays(kstDate(), o.total * CYCLE) : '-'),
+      });
+      rec.ok = r.ok; rec.error = r.ok ? '' : r.error;
+    }
+    o.messages = [...(o.messages || []), rec];
+    save();
+    return rec;
+  }
+
   async function notifyPhoto(o, by, req) {
     const c = contactOf(o.patient);
     const why = !alimtalk.enabled('photo') ? '알림톡 미설정' : !c.phone ? '연락처 없음' : !c.consent ? '수신동의 없음' : !o.photoToken ? '사진 없음' : '';
@@ -390,7 +412,7 @@ ${o.photos.map((_, i) => `<img src="/p/${o.photoToken}/${i}.jpg" alt="조제 사
     if (req.method === 'GET' && p === '/api/herb/state') {
       const contacts = Object.create(null);
       for (const o of db.orders) contacts[o.patient] = contactOf(o.patient);
-      return send(res, 200, { contacts, alimtalk: alimtalk.enabled('shipped'), kakaoPhoto: alimtalk.enabled('photo'), kakaoFollow: alimtalk.enabled('followup'), photoRead: photoRead.enabled(), pushDevices: db.pushSubs.map((x) => x.staff), trackUrl: TRACK_URL, orders: db.orders, stock: db.stock, stockLog: db.stockLog.slice(-60).reverse(), staff: db.staff, statuses: STATUSES, next: NEXT, followups: followups(), today: kstDate(), cycle: CYCLE, clinicName });
+      return send(res, 200, { contacts, alimtalk: alimtalk.enabled('shipped'), kakaoPhoto: alimtalk.enabled('photo'), kakaoWelcome: alimtalk.enabled('welcome'), kakaoFollow: alimtalk.enabled('followup'), photoRead: photoRead.enabled(), pushDevices: db.pushSubs.map((x) => x.staff), trackUrl: TRACK_URL, orders: db.orders, stock: db.stock, stockLog: db.stockLog.slice(-60).reverse(), staff: db.staff, statuses: STATUSES, next: NEXT, pkgPresets: PKG_PRESETS, cycle: CYCLE, followups: followups(), today: kstDate(), cycle: CYCLE, clinicName });
     }
 
     if (req.method === 'PUT' && p === '/api/herb/staff') {
@@ -518,7 +540,8 @@ ${o.photos.map((_, i) => `<img src="/p/${o.photoToken}/${i}.jpg" alt="조제 사
       const patient = str(b.patient, 30);
       if (!patient) return send(res, 400, { error: '환자 이름을 넣어 주세요.' });
       const round = int(b.round, 1, 99);
-      const total = int(b.total, 1, 99);
+      const pkgDays = pkgDaysOf(b.pkgDays);
+      const total = pkgDays ? pkgRounds(pkgDays) : int(b.total, 1, 99);
       const status = b.hasRx ? 'rx_ready' : 'need_rx';
       const dup = dupOf(patient, round);
       if (dup && !b.force) {
@@ -530,16 +553,19 @@ ${o.photos.map((_, i) => `<img src="/p/${o.photoToken}/${i}.jpg" alt="조제 사
         kind: ['자보', '비급여', '기타'].includes(b.kind) ? b.kind : '비급여',
         note: str(b.note, 300), assignee: '', location: '', sentAt: null,
         dueDate: isDate(b.dueDate) ? b.dueDate : kstDate(),
+        pkgDays, pkgStart: pkgDays ? kstDate() : '', pkgEnd: pkgDays ? addDays(kstDate(), pkgDays) : '',
         status, createdAt: now(), createdBy: by, updatedAt: now(), version: 1,
         history: [{ at: now(), by, from: null, to: status, note: '카드 생성' }],
       };
+      const firstOfPatient = !db.orders.some((x) => x.patient === patient && OPEN.includes(x.status)) && (round === 1 || !db.orders.some((x) => x.patient === patient));
       const ph = str(b.phone, 20).replace(/[^0-9]/g, '');
       const ad = b.adConsent === true ? true : undefined;
       if (ph && /^01\d{8,9}$/.test(ph)) setContact(patient, ph, b.consent === true ? true : undefined, by, ad);
       else if (db.phones[patient]) setContact(patient, undefined, b.consent === true ? true : undefined, by, ad);
       db.orders.push(o); save();
       if (status === 'rx_ready') pushAll('🌿 조제할 약', `${who(o)} ${o.formula || ''} — 새 카드`, by, 'rx-' + o.id);
-      return send(res, 201, o);
+      const welcome = firstOfPatient && b.welcome !== false ? await notifyWelcome(o, by) : null;
+      return send(res, 201, { ...o, welcome });
     }
 
     const m = p.match(/^\/api\/herb\/orders\/([a-f0-9]+)(\/move)?$/);
@@ -594,6 +620,7 @@ ${o.photos.map((_, i) => `<img src="/p/${o.photoToken}/${i}.jpg" alt="조제 사
             delivery: o.delivery, kind: o.kind, note: '', assignee: '', location: '', sentAt: null,
             status: 'need_rx', createdAt: now(), createdBy: by, updatedAt: now(), version: 1,
             dueDate: addDays(kstDate(o.sentAt), CYCLE), // 다음 회차 조제할 날 (직전 발송 + 15일)
+            pkgDays: o.pkgDays || 0, pkgStart: o.pkgStart || '', pkgEnd: o.pkgEnd || '',
             history: [{ at: now(), by, from: null, to: 'need_rx', note: `${o.round}회차 발송 후 자동 생성 (조제 예정 ${addDays(kstDate(o.sentAt), CYCLE)})` }],
           };
           db.orders.push(nextCard);
@@ -622,6 +649,14 @@ ${o.photos.map((_, i) => `<img src="/p/${o.photoToken}/${i}.jpg" alt="조제 사
         if (['자보', '비급여', '기타'].includes(b.kind) && b.kind !== o.kind) { o.kind = b.kind; changes.push('구분'); }
         if (typeof b.note === 'string' && str(b.note, 300) !== o.note) { o.note = str(b.note, 300); changes.push('메모'); }
         if (typeof b.location === 'string' && str(b.location, 40) !== o.location) { o.location = str(b.location, 40); changes.push('보관위치'); }
+        if (b.pkgDays !== undefined && pkgDaysOf(b.pkgDays) !== (o.pkgDays || 0)) {
+          const d = pkgDaysOf(b.pkgDays);
+          o.pkgDays = d;
+          o.pkgStart = d ? (o.pkgStart || kstDate(o.createdAt)) : '';
+          o.pkgEnd = d ? addDays(o.pkgStart, d) : '';
+          if (d) o.total = pkgRounds(d);
+          changes.push(d ? `패키지 ${d}일` : '패키지 없음');
+        }
         if (isDate(b.dueDate) && b.dueDate !== o.dueDate) { o.dueDate = b.dueDate; o.dueNotified = null; changes.push(`조제 예정 ${b.dueDate}`); }
         if (b.tracking !== undefined && cleanTrack(b.tracking) !== (o.tracking || '')) {
           const t = cleanTrack(b.tracking);

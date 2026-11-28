@@ -14,6 +14,7 @@ const TEMPLATES = {
   shipped: process.env.ALIMTALK_TPL_SHIPPED || '',   // 한약 발송 안내
   photo: process.env.ALIMTALK_TPL_PHOTO || '',       // 조제 완료 + 한약 사진 링크
   followup: process.env.ALIMTALK_TPL_FOLLOWUP || '', // 복용 중 안부 (15일 알람)
+  welcome: process.env.ALIMTALK_TPL_WELCOME || '',   // 결제 첫날 시작 인사
 };
 
 const enabled = (type) => !!(KEY && SECRET && PFID && TEMPLATES[type]);

@@ -323,7 +323,7 @@
         ${o.dueDate && ['need_rx', 'rx_ready'].includes(o.status) ? (o.dueDate > S.today ? `<span class="badge">📅 ${md2(o.dueDate)} 조제 예정</span>` : '<span class="badge r">📅 조제할 차례</span>') : ''}
         ${(o.photos || []).length ? `<span class="badge">📷 ${o.photos.length}</span>` : ''}
         ${o.delivery === '택배' && o.status !== 'sent' && msgWhy(o.patient) === '연락처 없음' ? '<span class="badge">📵 연락처 없음</span>' : ''}</div>
-      <div class="meta">${esc(o.formula || '처방 미기재')}${o.location ? ' · 📦 ' + esc(o.location) : ''} · ${fmt(o.updatedAt)}</div>
+      <div class="meta">${esc(o.formula || '처방 미기재')}${o.pkgDays ? ` · 🗓 ${o.pkgDays}일 패키지(~${md2(o.pkgEnd)})` : ''}${o.location ? ' · 📦 ' + esc(o.location) : ''} · ${fmt(o.updatedAt)}</div>
       ${o.assignee ? `<div class="who">조제: <b>${esc(o.assignee)}</b></div>` : ''}
       ${o.status === 'sent' ? `<div class="who">${esc(o.delivery)} ${fmt(o.sentAt)} · ${esc(o.history[o.history.length - 1]?.by || '')}${(() => { const m = (o.messages || []).slice(-1)[0]; return m ? (m.ok ? ' · 💬 알림톡 보냄' : ` · <span style="color:#b3261e">💬 안 보냄(${esc(m.error)})</span>`) : ''; })()}</div>` : ''}
       ${o.note ? `<div class="note">${esc(o.note)}</div>` : ''}
@@ -444,7 +444,7 @@
       <div><b class="nm">${esc(x.name)}</b> ${x.last ? `<span class="rd">${esc(roundTxt(x.last))}</span>` : ''}
         ${x.c.phone ? `<span class="badge">📱 ${esc(maskPhone(x.c.phone))}</span>` : '<span class="badge">📵 연락처 없음</span>'}
         ${x.c.adConsent ? '<span class="badge">이벤트 동의</span>' : ''}</div>
-      <div class="meta">${esc(x.formulas.join(', ') || '처방 미기재')} · 카드 ${x.list.length}장${x.last ? ` · 마지막 발송 ${fmt(x.last.sentAt)}` : ''}</div>
+      <div class="meta">${esc(x.formulas.join(', ') || '처방 미기재')}${(() => { const pk = [...x.list].reverse().find((o) => o.pkgDays); return pk ? ` · 🗓 ${pk.pkgDays}일 (~${md2(pk.pkgEnd)})` : ''; })()} · 카드 ${x.list.length}장${x.last ? ` · 마지막 발송 ${fmt(x.last.sentAt)}` : ''}</div>
       <div class="acts"><button class="ab" data-pcontact="${esc(x.name)}">연락처·동의</button>${x.done ? `<button class="ab" data-again="${esc(x.name)}">재처방 카드 만들기</button>` : ''}</div>
     </div>`;
     return `<input class="search" type="search" placeholder="환자 이름 검색">
@@ -553,6 +553,9 @@
         <div id="dupwarn"></div>
         <label class="f"><span>처방</span><input name="formula" placeholder="예: 당귀수산" list="formulas" value="${esc(pre.formula || '')}"></label>${chips('formula', pre.formulas)}
         <datalist id="formulas">${S.stock.map((s) => `<option value="${esc(s.name)}">`).join('')}</datalist>
+        <div class="f"><span>결제한 패키지 일수 (총 회차 자동 · 1회차 = ${S.cycle || 15}일)</span>
+          ${segHTML('pkg', (S.pkgPresets || []).map((d) => [d, `${d}일`]), '')}
+          <input name="pkgDays" type="number" min="15" max="730" inputmode="numeric" placeholder="직접 입력 (일)" style="margin-top:6px"><small id="pkginfo" style="color:var(--mut)"></small></div>
         <div class="two">
           <label class="f"><span>이번 회차</span><input name="round" type="number" min="1" max="99" inputmode="numeric"></label>
           <label class="f"><span>총 회차</span><input name="total" type="number" min="1" max="99" inputmode="numeric" value="6"></label>
@@ -587,6 +590,17 @@
         setSeg('delivery', past.delivery); setSeg('kind', past.kind);
         const c = contact(nm); if (c.phone && !f.phone.value) f.phone.value = c.phone; if (c.consent) f.consent.checked = true; if (c.adConsent) f.adConsent.checked = true;
       };
+      const pkgApply = () => {
+        const d = Number(f.pkgDays.value);
+        const info = el.querySelector('#pkginfo');
+        if (d >= 15) {
+          f.total.value = Math.ceil(d / (S.cycle || 15)); if (!f.round.value) f.round.value = 1;
+          const end = new Date(Date.parse(S.today) + d * 86400000).toISOString().slice(0, 10);
+          info.textContent = ` → 총 ${f.total.value}회차 · 종료 ${md2(end)}`;
+        } else info.textContent = '';
+      };
+      el.querySelector('[data-seg="pkg"]').addEventListener('change', () => { f.pkgDays.value = segVal(el, 'pkg') || ''; pkgApply(); });
+      f.pkgDays.addEventListener('input', () => { el.querySelectorAll('[data-seg="pkg"] button').forEach((x) => x.classList.toggle('on', x.dataset.v === f.pkgDays.value)); pkgApply(); });
       el.querySelectorAll('[data-cand]').forEach((g) => g.addEventListener('click', (e) => {
         const b = e.target.closest('button'); if (!b) return;
         f[g.dataset.cand].value = b.textContent;
@@ -621,9 +635,12 @@
         const body = {
           patient: f.patient.value, formula: f.formula.value, round: f.round.value || null, total: f.total.value || null,
           hasRx: segVal(el, 'rx') === '1', kind: segVal(el, 'kind'), delivery: segVal(el, 'delivery'), note: f.note.value,
-          phone: f.phone.value, consent: f.consent.checked, adConsent: f.adConsent.checked,
+          phone: f.phone.value, consent: f.consent.checked, adConsent: f.adConsent.checked, pkgDays: Number(f.pkgDays.value) || 0,
         };
-        try { await api('POST', '/api/herb/orders', body); el.remove(); toast('카드를 만들었어요'); load(); }
+        try {
+          const r = await api('POST', '/api/herb/orders', body);
+          el.remove(); toast('카드를 만들었어요' + msgToast(r.welcome, ' · 시작 인사 카톡 보냄'), r.welcome && !r.welcome.ok && r.welcome.error !== '알림톡 미설정' && r.welcome.error !== '연락처 없음'); load();
+        }
         catch (err) {
           if (err.status === 409 && err.data?.dupId) {
             el.querySelector('#ne').innerHTML = `${esc(err.message)}<br><button type="button" class="ab w" id="force">그래도 새로 만들기</button>`;
@@ -738,6 +755,7 @@
           <label class="f"><span>회차</span><input name="round" type="number" value="${o.round ?? ''}"></label>
           <label class="f"><span>총 회차</span><input name="total" type="number" value="${o.total ?? ''}"></label>
         </div>
+        <label class="f"><span>패키지 일수${o.pkgStart ? ` (결제 ${md2(o.pkgStart)} → 종료 ${md2(o.pkgEnd)})` : ''} · 비우면 없음</span><input name="pkgDays" type="number" min="15" max="730" inputmode="numeric" value="${o.pkgDays || ''}"></label>
         <div class="f"><span>구분</span>${segHTML('kind', [['비급여', '비급여'], ['자보', '자보'], ['기타', '기타']], o.kind)}</div>
         <div class="f"><span>받는 방법</span>${segHTML('delivery', [['택배', '택배'], ['직수', '직수'], ['내원', '내원']], o.delivery)}</div>
         <label class="f"><span>보관 위치</span><input name="location" value="${esc(o.location)}"></label>
@@ -765,6 +783,7 @@
           await api('PATCH', `/api/herb/orders/${id}`, {
             version: o.version, patient: f.patient.value, formula: f.formula.value, round: f.round.value || null, total: f.total.value || null,
             kind: segVal(el, 'kind'), delivery: segVal(el, 'delivery'), location: f.location.value, note: f.note.value,
+            pkgDays: Number(f.pkgDays.value) || 0,
             ...(f.tracking ? { tracking: f.tracking.value } : {}),
             ...(f.dueDate && f.dueDate.value ? { dueDate: f.dueDate.value } : {}),
           });

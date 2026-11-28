@@ -68,3 +68,4 @@ pre.sum{white-space:pre-wrap;background:#fff;border:1px solid var(--line);border
 .use small{color:var(--mut);font-size:12px}
 .lowrow td{background:#fff4f2}
 .cand{margin-top:6px}.cand button{font-size:14px;padding:6px 10px}
+.thumbs{display:flex;gap:6px;flex-wrap:wrap;margin:6px 0}.thumbs img{width:72px;height:72px;object-fit:cover;border-radius:8px}.thumbs small{width:100%;color:var(--mut)}

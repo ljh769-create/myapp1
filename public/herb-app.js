@@ -72,11 +72,11 @@
     });
   }
   // 사진을 긴 변 1600px JPEG로 줄여 base64로
-  function shrink(file) {
+  function shrink(file, max = 1600) {
     return new Promise((ok, no) => {
       const img = new Image(), url = URL.createObjectURL(file);
       img.onload = () => {
-        const k = Math.min(1, 1600 / Math.max(img.width, img.height));
+        const k = Math.min(1, max / Math.max(img.width, img.height));
         const c = document.createElement('canvas'); c.width = Math.round(img.width * k); c.height = Math.round(img.height * k);
         c.getContext('2d').drawImage(img, 0, 0, c.width, c.height); URL.revokeObjectURL(url);
         ok(c.toDataURL('image/jpeg', 0.85).split(',')[1]);
@@ -85,6 +85,23 @@
       img.src = url;
     });
   }
+  const photoInput = (id) => `<label class="ab" style="display:block;text-align:center;min-height:48px;line-height:30px;cursor:pointer">📷 한약 사진 찍기<input type="file" accept="image/*" capture="environment" multiple id="${id}" hidden></label><div class="thumbs" id="${id}-prev"></div>`;
+  function bindPhotoInput(el, id) {
+    const inp = el.querySelector('#' + id), prev = el.querySelector('#' + id + '-prev'), files = [];
+    if (!inp) return () => [];
+    inp.onchange = () => {
+      for (const f of inp.files) if (files.length < 4) files.push(f);
+      prev.innerHTML = files.map((f) => `<img src="${URL.createObjectURL(f)}">`).join('') + (files.length ? `<small>${files.length}장 · 더 찍으려면 다시 누르세요</small>` : '');
+      inp.value = '';
+    };
+    return () => files;
+  }
+  async function uploadPhotos(id, files, notify = true) {
+    const photos = []; for (const f of files) photos.push(await shrink(f, 1280));
+    return api('POST', `/api/herb/orders/${id}`, { photos, notify });
+  }
+  const msgToast = (m, okText) => (m ? (m.ok ? okText : m.error === '알림톡 미설정' ? '' : ` · 카톡 안 보냄(${m.error})`) : '');
+  const md2 = (d) => (d ? `${Number(d.slice(5, 7))}.${Number(d.slice(8, 10))}` : '');
   const roundTxt = (o) => (o.round ? `${o.round}${o.total ? '/' + o.total : '회차'}` : '');
 
   function toast(msg, err) {
@@ -191,9 +208,15 @@
       <div><span class="nm">${k}</span>${x.round ? `<span class="rd">${x.round}${x.total ? '/' + x.total : ''}회차</span>` : ''}
         <span class="badge ${x.due ? 'r' : ''}">${x.due ? (x.late ? `${x.late}일 지남` : '오늘 확인') : `${x.left}일 남음`}</span></div>
       <div class="meta">출발 ${md(x.base)} · 오늘 ${x.days}일째 · 알람일 ${md(x.dueDate)}${x.ackBy ? ' · 지난 확인 ' + esc(x.ackBy) : ''}</div>
+      ${x.kakaoAt ? `<div class="who">💬 안부·설문 카톡 ${fmt(x.kakaoAt)}</div>` : ''}
+      ${x.survey ? (x.survey.answer
+        ? `<div class="note" style="${x.survey.alert ? 'background:#fde5e2' : ''}">${x.survey.alert ? '⚠ <b>연락 필요</b> · ' : '📝 '}설문 ${fmt(x.survey.answeredAt)}<br>복용: ${esc(x.survey.answer.taking)} · 상태: ${esc(x.survey.answer.feel)} · 불편: ${esc(x.survey.answer.side)}${x.survey.answer.call === 'yes' ? ' · <b>전화 원함</b>' : ''}${x.survey.answer.memo ? '<br>' + esc(x.survey.answer.memo) : ''}</div>`
+        : '<div class="who">📝 설문 아직 답 없음</div>') : ''}
       <div class="acts">
         ${x.due ? `<button class="ab p" data-follow="ack" data-p="${k}">확인 완료</button>` : ''}
-        ${x.phone ? `<a class="ab" href="sms:${esc(x.phone)}?&body=${encodeURIComponent(smsText(x))}">📱 문자 보내기</a>` : `<button class="ab" data-follow="phone" data-p="${k}">연락처 넣기</button>`}
+        ${!x.phone ? `<button class="ab" data-follow="phone" data-p="${k}">연락처 넣기</button>`
+          : S.kakaoFollow ? (contact(x.patient).consent ? `<button class="ab" data-follow="kakao" data-p="${k}">💬 카톡 보내기</button>` : `<button class="ab" data-pcontact="${k}">수신동의 넣기</button>`)
+          : `<a class="ab" href="sms:${esc(x.phone)}?&body=${encodeURIComponent(smsText(x))}">📱 문자 보내기</a>`}
         <button class="ab" data-follow="copy" data-p="${k}">문구 복사</button>
         <button class="ab" data-follow="again" data-p="${k}">새로 출발</button>
         <button class="ab w" data-follow="stop" data-p="${k}">알람 끝내기</button>
@@ -234,6 +257,11 @@
       return;
     }
     const body = { patient: name, base: x.base, dueDate: x.dueDate };
+    if (act === 'kakao') {
+      try { await api('POST', '/api/herb/follow/kakao', { patient: name }); toast(`${name}님께 카톡을 보냈어요. 답이 오면 확인 완료를 눌러 주세요.`); }
+      catch (e) { toast(e.message, true); }
+      return;
+    }
     if (act === 'phone') { const v = prompt(`${name}님 휴대폰 번호 (비우면 삭제)`, x.phone); if (v === null) return; body.phone = v; }
     if (act === 'stop' && !confirm(`${name}님 알람을 끝낼까요? (다시 출발 등록하면 새로 시작돼요)`)) return;
     try { await api('POST', `/api/herb/follow/${act}`, body); toast(act === 'ack' ? '확인했어요' : act === 'stop' ? '알람을 끝냈어요' : '저장했어요'); }
@@ -292,13 +320,37 @@
         ${same.length ? '<span class="badge r">⚠ 같은 회차 중복</span>' : ''}
         ${needTrack(o) ? '<span class="badge r">📦 로젠 접수 필요</span>' : ''}
         ${o.tracking ? `<span class="badge">✅ 송장 ${esc(o.tracking.slice(-4))}</span>` : ''}
+        ${o.dueDate && ['need_rx', 'rx_ready'].includes(o.status) ? (o.dueDate > S.today ? `<span class="badge">📅 ${md2(o.dueDate)} 조제 예정</span>` : '<span class="badge r">📅 조제할 차례</span>') : ''}
+        ${(o.photos || []).length ? `<span class="badge">📷 ${o.photos.length}</span>` : ''}
         ${o.delivery === '택배' && o.status !== 'sent' && msgWhy(o.patient) === '연락처 없음' ? '<span class="badge">📵 연락처 없음</span>' : ''}</div>
       <div class="meta">${esc(o.formula || '처방 미기재')}${o.location ? ' · 📦 ' + esc(o.location) : ''} · ${fmt(o.updatedAt)}</div>
       ${o.assignee ? `<div class="who">조제: <b>${esc(o.assignee)}</b></div>` : ''}
       ${o.status === 'sent' ? `<div class="who">${esc(o.delivery)} ${fmt(o.sentAt)} · ${esc(o.history[o.history.length - 1]?.by || '')}${(() => { const m = (o.messages || []).slice(-1)[0]; return m ? (m.ok ? ' · 💬 알림톡 보냄' : ` · <span style="color:#b3261e">💬 안 보냄(${esc(m.error)})</span>`) : ''; })()}</div>` : ''}
       ${o.note ? `<div class="note">${esc(o.note)}</div>` : ''}
-      <div class="acts">${acts}</div>
+      <div class="acts">${acts}${['done', 'sent'].includes(o.status) ? `<button class="ab" data-photo="${o.id}">📷 사진</button>` : ''}</div>
     </div>`;
+  }
+  function openPhoto(id) {
+    const o = S.orders.find((x) => x.id === id); if (!o) return;
+    const n = (o.photos || []).length;
+    sheet(`<h3>${esc(o.patient)} ${esc(roundTxt(o))} 한약 사진</h3>
+      ${n ? `<p class="sub">지금 ${n}장 · <a href="/p/${esc(o.photoToken)}" target="_blank">환자에게 보이는 화면 보기</a></p>` : ''}
+      ${photoInput('aph')}
+      ${S.kakaoPhoto ? (msgWhy(o.patient) ? `<div class="warnbox">💬 카톡 안 보냄: ${esc(msgWhy(o.patient))}</div>` : `<label class="f" style="display:flex;gap:8px;align-items:center"><input type="checkbox" id="sendph" style="width:auto" checked> 환자에게 카톡으로 보내기 (${esc(maskPhone(contact(o.patient).phone))})</label>`) : '<p class="sub">카톡 사진 안내는 알림톡 설정 후 사용할 수 있어요.</p>'}
+      <div class="okrow"><button class="ab" data-close>닫기</button>${n && S.kakaoPhoto && !msgWhy(o.patient) ? '<button class="ab" id="resendph">기존 사진 다시 보내기</button>' : ''}<button class="ab p" id="ok">저장</button></div>`, (el) => {
+      const getPh = bindPhotoInput(el, 'aph');
+      const send = !!el.querySelector('#sendph');
+      el.querySelector('#ok').onclick = async () => {
+        if (!getPh().length) return toast('사진을 먼저 찍어 주세요.', true);
+        try { const r = await uploadPhotos(id, getPh(), send && el.querySelector('#sendph').checked); el.remove(); toast(`사진 ${r.photos}장 저장` + msgToast(r.msg, ' · 카톡 보냄'), r.msg && !r.msg.ok && r.msg.error !== '알림톡 미설정'); load(); }
+        catch (e) { toast(e.message, true); }
+      };
+      const rs = el.querySelector('#resendph');
+      if (rs) rs.onclick = async () => {
+        try { const r = await api('POST', `/api/herb/orders/${id}`, { photos: [], sendOnly: true }); el.remove(); toast(r.msg && r.msg.ok ? '카톡 보냄' : '안 보냄: ' + (r.msg ? r.msg.error : ''), !(r.msg && r.msg.ok)); load(); }
+        catch (e) { toast(e.message, true); }
+      };
+    });
   }
 
   // ---------- 오늘 요약 ----------
@@ -612,12 +664,25 @@
         ${o.status === 'compounding' && o.assignee && o.assignee !== me() ? `<div class="warnbox">${esc(o.assignee)}님이 조제중인 카드예요. 정말 완료된 걸 확인했나요?</div>` : ''}
         <label class="f"><span>보관 위치 *</span><input id="loc" value="${esc(o.location)}" placeholder="예: 냉동 A칸, 택배 선반"></label>
         <div class="seg" style="margin-bottom:6px">${['냉동', '냉장', '택배 선반', '데스크'].map((x) => `<button type="button" data-loc="${x}">${x}</button>`).join('')}</div>
+        <div class="f"><span>한약 사진 (환자에게 카톡으로 보낼 수 있어요)</span>${photoInput('dph')}</div>
+        ${S.kakaoPhoto ? `<label class="f" style="display:flex;gap:8px;align-items:center"><input type="checkbox" id="sendph" style="width:auto" checked ${msgWhy(o.patient) ? 'disabled' : ''}> 사진을 환자에게 카톡으로 보내기 ${msgWhy(o.patient) ? `<small>(${esc(msgWhy(o.patient))})</small>` : `<small>${esc(maskPhone(contact(o.patient).phone))}</small>`}</label>` : ''}
         ${o.status === 'compounding' ? useHTML('done', (x) => (x.name === '파우치' ? '' : x.name === '쌍화탕 박스' ? '' : '')) : ''}
         <label class="f"><span>메모 (선택)</span><input id="mn"></label>
         <div class="okrow"><button class="ab" data-close>취소</button><button class="ab p" id="ok">완료</button></div>`, (el) => {
         el.querySelectorAll('[data-loc]').forEach((b) => (b.onclick = () => { el.querySelector('#loc').value = b.dataset.loc; }));
+        const getPh = bindPhotoInput(el, 'dph');
         el.querySelector('#ok').onclick = async () => {
-          try { await api('POST', `/api/herb/orders/${id}/move`, { ...body, location: el.querySelector('#loc').value, note: el.querySelector('#mn').value, use: readUse(el, 'done') }); el.remove(); toast('조제완료'); load(); }
+          try {
+            await api('POST', `/api/herb/orders/${id}/move`, { ...body, location: el.querySelector('#loc').value, note: el.querySelector('#mn').value, use: readUse(el, 'done') });
+            el.remove();
+            let extra = '';
+            if (getPh().length) {
+              toast('조제완료 · 사진 올리는 중…');
+              const r = await uploadPhotos(id, getPh(), !!el.querySelector('#sendph')?.checked);
+              extra = ` · 사진 ${r.photos}장` + msgToast(r.msg, ' · 카톡 보냄');
+            }
+            toast('조제완료' + extra); load();
+          }
           catch (e) { toast(e.message, true); if (e.status === 409) { el.remove(); load(); } }
         };
       });
@@ -676,6 +741,7 @@
         <div class="f"><span>구분</span>${segHTML('kind', [['비급여', '비급여'], ['자보', '자보'], ['기타', '기타']], o.kind)}</div>
         <div class="f"><span>받는 방법</span>${segHTML('delivery', [['택배', '택배'], ['직수', '직수'], ['내원', '내원']], o.delivery)}</div>
         <label class="f"><span>보관 위치</span><input name="location" value="${esc(o.location)}"></label>
+        ${['need_rx', 'rx_ready'].includes(o.status) ? `<label class="f"><span>조제 예정일 (이 날 알림)</span><input name="dueDate" type="date" value="${esc(o.dueDate || '')}"></label>` : ''}
         ${o.delivery === '택배' ? `<label class="f"><span>로젠 송장번호</span><input name="tracking" inputmode="numeric" value="${esc(o.tracking || '')}"></label>` : ''}
         <label class="f"><span>메모</span><textarea name="note" rows="2">${esc(o.note)}</textarea></label>
         <div class="okrow"><button type="button" class="ab" data-close>닫기</button><button class="ab p">수정 저장</button></div>
@@ -700,6 +766,7 @@
             version: o.version, patient: f.patient.value, formula: f.formula.value, round: f.round.value || null, total: f.total.value || null,
             kind: segVal(el, 'kind'), delivery: segVal(el, 'delivery'), location: f.location.value, note: f.note.value,
             ...(f.tracking ? { tracking: f.tracking.value } : {}),
+            ...(f.dueDate && f.dueDate.value ? { dueDate: f.dueDate.value } : {}),
           });
           el.remove(); toast('저장했어요'); load();
         } catch (err) { toast(err.message, true); }
@@ -725,11 +792,12 @@
 
   // ---------- 이벤트 ----------
   document.addEventListener('click', async (e) => {
-    const t = e.target.closest('[data-tab],[data-a],[data-move],[data-open],[data-me],[data-stock],[data-stockset],[data-stockin],[data-stockmin],[data-follow],[data-track],[data-pcontact],[data-again]');
+    const t = e.target.closest('[data-tab],[data-a],[data-move],[data-open],[data-me],[data-stock],[data-stockset],[data-stockin],[data-stockmin],[data-follow],[data-track],[data-pcontact],[data-again],[data-photo]');
     if (!t) return;
     if (t.tagName === 'A') e.preventDefault();
     if (t.dataset.tab) { tab = t.dataset.tab; render(); return; }
     if (t.dataset.me) { localStorage.setItem(LS.me, t.dataset.me); render(); openPending(); return; }
+    if (t.dataset.photo) return openPhoto(t.dataset.photo);
     if (t.dataset.pcontact) return openContact(t.dataset.pcontact);
     if (t.dataset.again) { tab = 'board'; render(); openNew(); const f = document.querySelector('#nf'); f.patient.value = t.dataset.again; f.round.value = 1; f.patient.dispatchEvent(new Event('input')); f.patient.dispatchEvent(new Event('change')); return; }
     if (t.dataset.track) { document.querySelectorAll('.sheet').forEach((x) => x.remove()); return openTrack(t.dataset.track); }

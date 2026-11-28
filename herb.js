@@ -7,6 +7,7 @@
 const fs = require('fs');
 const alimtalk = require('./alimtalk');
 const photoRead = require('./photo-read');
+const createPush = require('./push');
 // 로젠 배송조회 주소 (송장번호가 뒤에 붙음). 바뀌면 환경변수로 교체
 const TRACK_URL = process.env.LOGEN_TRACK_URL || 'https://www.ilogen.com/web/personal/trace/';
 const path = require('path');
@@ -70,7 +71,19 @@ module.exports = function createHerb({ dataDir, password, secret, send, readBody
   db.follow = dict(db.follow);         // 알람 확인/종료 상태
   db.phones = dict(db.phones);
   db.consent = dict(db.consent);       // 알림톡 수신 동의 { at, by }
-  db.adConsent = dict(db.adConsent);   // 광고성(이벤트) 정보 수신 동의 { at, by } — 알림톡 동의와 별개
+  db.adConsent = dict(db.adConsent);
+  db.pushSubs = Array.isArray(db.pushSubs) ? db.pushSubs : []; // 직원 휴대폰 푸시 구독 { endpoint, keys, staff, at }
+  const push = createPush(dataDir);
+  // 직원 휴대폰으로 알림. 잠금화면에 보이므로 이름은 가려서 넣을 것. except: 이 일을 한 본인 기기는 제외
+  function pushAll(title, body, except = '', tag = '') {
+    const subs = db.pushSubs.filter((x) => !except || x.staff !== except);
+    if (!subs.length) return;
+    Promise.all(subs.map(async (sub) => [sub, await push.sendOne(sub, { title, body, tag, url: '/herb' })])).then((rs) => {
+      const gone = rs.filter(([, r]) => r === 'gone').map(([x]) => x.endpoint);
+      if (gone.length) { db.pushSubs = db.pushSubs.filter((x) => !gone.includes(x.endpoint)); save(); }
+    }).catch((e) => console.error('푸시 오류:', e.message));
+  }
+  const who = (o) => `${maskName(o.patient)} ${o.round ? o.round + (o.total ? '/' + o.total : '회차') : ''}`.trim();   // 광고성(이벤트) 정보 수신 동의 { at, by } — 알림톡 동의와 별개
   for (const s of db.stock) { s.cat = s.cat || '탕약'; s.min = Number(s.min) || 0; }
   for (const [name, unit, qty] of DEFAULT_PACK) {
     if (!db.stock.some((x) => x.name === name)) db.stock.push({ id: rid(), name, qty, unit, cat: '포장재', min: 0, updatedAt: null, by: '' });
@@ -78,7 +91,10 @@ module.exports = function createHerb({ dataDir, password, secret, send, readBody
 
   // 재고 변경은 전부 여기로: 누가, 왜, 얼마나 바꿨는지 남김
   function stockChange(s, delta, by, reason) {
+    const lowAt = (q) => (s.min > 0 ? q <= s.min : q <= 0);
+    const wasLow = lowAt(s.qty);
     s.qty = Math.round((s.qty + delta) * 10) / 10;
+    if (!wasLow && lowAt(s.qty)) pushAll('📦 재고 부족', `${s.name} ${s.qty}${s.unit} 남음 — 주문/제작 필요`, '', 'stock-' + s.id);
     s.updatedAt = now(); s.by = by;
     db.stockLog.push({ at: now(), by, id: s.id, name: s.name, delta: Math.round(delta * 10) / 10, after: s.qty, reason });
     if (db.stockLog.length > 2000) db.stockLog = db.stockLog.slice(-2000);
@@ -185,11 +201,18 @@ module.exports = function createHerb({ dataDir, password, secret, send, readBody
   // 직원 텔레그램방에 하루 한 번(오전 9시 이후) 확인할 환자 알림
   let sending = false;
   async function digest() {
-    if (!notify || sending) return;
+    if (sending) return;
     const today = kstDate(), hour = kstHour();
-    if (hour < 9 || hour >= 20 || db.lastDigest === today) return;
+    if (hour < 9 || hour >= 20) return;
     const due = followups(today).filter((x) => x.due);
     if (!due.length) return;
+    // 휴대폰 푸시: 하루 한 번 아침 요약 (15일 확인 + 로젠 접수 대기)
+    if (db.lastPushDigest !== today && db.pushSubs.length) {
+      const ship = db.orders.filter((o) => o.delivery === '택배' && !o.tracking && ['compounding', 'done'].includes(o.status)).length;
+      pushAll(`⏰ 오늘 확인할 환자 ${due.length}명`, `${due.slice(0, 5).map((x) => maskName(x.patient)).join(', ')}${due.length > 5 ? ` 외 ${due.length - 5}명` : ''}${ship ? ` · 로젠 접수 대기 ${ship}건` : ''}`, '', 'digest');
+      db.lastPushDigest = today; save();
+    }
+    if (!notify || db.lastDigest === today) return;
     sending = true;
     try {
       const lines = [`⏰ 한약 ${CYCLE}일 확인 ${due.length}명`,
@@ -220,7 +243,7 @@ module.exports = function createHerb({ dataDir, password, secret, send, readBody
     if (req.method === 'GET' && p === '/api/herb/state') {
       const contacts = Object.create(null);
       for (const o of db.orders) contacts[o.patient] = contactOf(o.patient);
-      return send(res, 200, { contacts, alimtalk: alimtalk.enabled('shipped'), photoRead: photoRead.enabled(), trackUrl: TRACK_URL, orders: db.orders, stock: db.stock, stockLog: db.stockLog.slice(-60).reverse(), staff: db.staff, statuses: STATUSES, next: NEXT, followups: followups(), today: kstDate(), cycle: CYCLE, clinicName });
+      return send(res, 200, { contacts, alimtalk: alimtalk.enabled('shipped'), photoRead: photoRead.enabled(), pushDevices: db.pushSubs.map((x) => x.staff), trackUrl: TRACK_URL, orders: db.orders, stock: db.stock, stockLog: db.stockLog.slice(-60).reverse(), staff: db.staff, statuses: STATUSES, next: NEXT, followups: followups(), today: kstDate(), cycle: CYCLE, clinicName });
     }
 
     if (req.method === 'PUT' && p === '/api/herb/staff') {
@@ -266,6 +289,34 @@ module.exports = function createHerb({ dataDir, password, secret, send, readBody
       }
       save();
       return send(res, 200, { followups: followups() });
+    }
+
+    // 푸시 알림 구독
+    if (p === '/api/herb/push/key' && req.method === 'GET') return send(res, 200, { key: push.publicKey });
+    if (p === '/api/herb/push/subscribe' && req.method === 'POST') {
+      if (needActor()) return;
+      const b = await readBody(req, 10_000);
+      const sub = b.sub || {};
+      const ok = typeof sub.endpoint === 'string' && /^https:\/\//.test(sub.endpoint) && sub.endpoint.length < 1000
+        && sub.keys && typeof sub.keys.p256dh === 'string' && typeof sub.keys.auth === 'string';
+      if (!ok) return send(res, 400, { error: '알림 등록 정보가 올바르지 않아요.' });
+      db.pushSubs = db.pushSubs.filter((x) => x.endpoint !== sub.endpoint);
+      db.pushSubs.push({ endpoint: sub.endpoint, keys: { p256dh: str(sub.keys.p256dh, 200), auth: str(sub.keys.auth, 100) }, staff: by, at: now() });
+      if (db.pushSubs.length > 100) db.pushSubs = db.pushSubs.slice(-100);
+      save();
+      return send(res, 200, { ok: true });
+    }
+    if (p === '/api/herb/push/unsubscribe' && req.method === 'POST') {
+      const b = await readBody(req, 10_000);
+      db.pushSubs = db.pushSubs.filter((x) => x.endpoint !== b.endpoint); save();
+      return send(res, 200, { ok: true });
+    }
+    if (p === '/api/herb/push/test' && req.method === 'POST') {
+      const b = await readBody(req, 10_000);
+      const sub = db.pushSubs.find((x) => x.endpoint === b.endpoint);
+      if (!sub) return send(res, 404, { error: '이 폰은 알림이 등록되어 있지 않아요.' });
+      const r = await push.sendOne(sub, { title: '🔔 알림 테스트', body: '이 폰으로 한약 진행 알림이 옵니다.', tag: 'test', url: '/herb' });
+      return r === 'ok' ? send(res, 200, { ok: true }) : send(res, 502, { error: '보내지 못했어요. 알림을 다시 켜 주세요.' });
     }
 
     // 사진에서 카드 정보 읽기 (사진은 저장하지 않음)
@@ -329,6 +380,7 @@ module.exports = function createHerb({ dataDir, password, secret, send, readBody
       if (ph && /^01\d{8,9}$/.test(ph)) setContact(patient, ph, b.consent === true ? true : undefined, by, ad);
       else if (db.phones[patient]) setContact(patient, undefined, b.consent === true ? true : undefined, by, ad);
       db.orders.push(o); save();
+      if (status === 'rx_ready') pushAll('🌿 조제할 약', `${who(o)} ${o.formula || ''} — 새 카드`, by, 'rx-' + o.id);
       return send(res, 201, o);
     }
 
@@ -389,6 +441,10 @@ module.exports = function createHerb({ dataDir, password, secret, send, readBody
         }
         save();
         const msg = to === 'sent' && o.delivery === '택배' ? await notifyShipped(o, by) : null;
+        if (to === 'rx_ready' && ['need_rx', 'hold'].includes(o.history[o.history.length - 1].from)) pushAll('🌿 조제할 약', `${who(o)} ${o.formula || ''} — 처방전 받음`, by, 'rx-' + o.id);
+        if (to === 'done' && o.delivery === '택배' && !o.tracking) pushAll('📦 로젠 접수 필요', `${who(o)} 조제완료 — 택배 접수 후 송장 입력`, by, 'ship-' + o.id);
+        if (to === 'recall') pushAll('⚠ 회수 필요', `${who(o)} — ${str(b.note, 60) || '사유 확인'}`, by, 'recall-' + o.id);
+        if (msg && !msg.ok && msg.error !== '알림톡 미설정') pushAll('💬 알림톡 안 보냄', `${who(o)} — ${msg.error}`, '', 'msg-' + o.id);
         return send(res, 200, { ...o, nextCard: nextCard ? { id: nextCard.id, round: nextCard.round } : null, msg });
       }
 

@@ -142,6 +142,7 @@
     if (tab === 'stock') body.innerHTML = stockHTML();
     if (tab === 'patients') body.innerHTML = patientsHTML();
     if (tab === 'settings') body.innerHTML = settingsHTML();
+    if (tab === 'settings') pushStatus();
     const s = body.querySelector('.search');
     if (s) { s.value = q; s.oninput = () => { q = s.value.trim(); const pos = s.selectionStart; render(); const n = $app.querySelector('.search'); n.focus(); n.setSelectionRange(pos, pos); }; }
   }
@@ -421,6 +422,33 @@
     });
   }
 
+  // ---------- 푸시 알림 ----------
+  const pushOK = () => 'serviceWorker' in navigator && 'PushManager' in window && 'Notification' in window;
+  const isIOS = /iPhone|iPad/.test(navigator.userAgent);
+  const b64ToBytes = (b) => { const s = atob((b + '='.repeat((4 - (b.length % 4)) % 4)).replace(/-/g, '+').replace(/_/g, '/')); return Uint8Array.from(s, (c) => c.charCodeAt(0)); };
+  async function mySub() { const r = await navigator.serviceWorker.ready; return r.pushManager.getSubscription(); }
+  async function pushStatus() {
+    const el = document.getElementById('pushstat'); if (!el) return;
+    if (!pushOK()) { el.innerHTML = isIOS ? '아이폰은 <b>홈 화면에 앱으로 설치한 뒤</b> 그 앱에서 켤 수 있어요 (iOS 16.4 이상).' : '이 브라우저는 알림을 지원하지 않아요. 크롬을 써 주세요.'; return; }
+    if (Notification.permission === 'denied') { el.innerHTML = '알림이 <b>차단</b>되어 있어요. 폰 설정 → 앱/사이트 알림에서 허용해 주세요.'; return; }
+    const sub = await mySub().catch(() => null);
+    el.innerHTML = sub
+      ? '✅ 이 폰은 알림을 받고 있어요. <button class="ab" data-a="pushtest">테스트 보내기</button> <button class="ab w" data-a="pushoff">끄기</button>'
+      : '<button class="ab p" data-a="pushon">🔔 이 폰 알림 켜기</button>';
+  }
+  async function pushOn() {
+    try {
+      if (await Notification.requestPermission() !== 'granted') { toast('알림을 허용해야 받을 수 있어요.', true); return pushStatus(); }
+      const reg = await navigator.serviceWorker.ready;
+      const { key } = await api('GET', '/api/herb/push/key');
+      let sub = await reg.pushManager.getSubscription();
+      if (sub && sub.options.applicationServerKey && btoa(String.fromCharCode(...new Uint8Array(sub.options.applicationServerKey))) !== btoa(String.fromCharCode(...b64ToBytes(key)))) { await sub.unsubscribe(); sub = null; }
+      sub = sub || await reg.pushManager.subscribe({ userVisibleOnly: true, applicationServerKey: b64ToBytes(key) });
+      await api('POST', '/api/herb/push/subscribe', { sub: sub.toJSON() });
+      toast('알림을 켰어요'); await load(); pushStatus();
+    } catch (e) { toast('알림을 켜지 못했어요: ' + e.message, true); }
+  }
+
   // ---------- 설정 ----------
   function settingsHTML() {
     return `<div class="panel" style="background:#fff;border:1px solid var(--line);border-radius:14px;padding:16px">
@@ -430,6 +458,10 @@
         <button class="ab p" data-a="savestaff">저장</button>
       </div>
       <p><a class="ab p" href="/herb-link.html" style="display:inline-block;text-decoration:none">🔗 오케이차트 연결 버튼 설치</a></p>
+      <div class="rule" id="pushbox"><b>🔔 이 폰으로 알림 받기</b><br>
+        조제할 약, 로젠 접수 필요, 회수, 재고 부족, 15일 확인 환자(아침 1회)를 알려 줘요. 잠금화면에는 이름이 가려져 보여요 (김○수).<br>
+        <span id="pushstat">확인 중…</span><br>
+        <small>지금 알림 받는 폰: ${(S.pushDevices || []).length ? esc((S.pushDevices || []).join(', ')) : '없음'}</small></div>
       <div class="rule"><b>📱 휴대폰에 앱으로 설치</b><br>
         ${matchMedia('(display-mode: standalone)').matches ? '✅ 지금 앱으로 쓰고 있어요.'
           : installEvt ? '<button class="ab p" data-a="install">홈 화면에 앱 설치</button>'
@@ -718,6 +750,9 @@
     switch (t.dataset.a) {
       case 'whoami': localStorage.removeItem(LS.me); render(); break;
       case 'new': openNew(); break;
+      case 'pushon': pushOn(); break;
+      case 'pushoff': { const sub = await mySub(); if (sub) { await api('POST', '/api/herb/push/unsubscribe', { endpoint: sub.endpoint }).catch(() => {}); await sub.unsubscribe(); } toast('알림을 껐어요'); await load(); pushStatus(); break; }
+      case 'pushtest': { const sub = await mySub(); try { await api('POST', '/api/herb/push/test', { endpoint: sub.endpoint }); toast('보냈어요. 잠시 후 알림이 와요'); } catch (e) { toast(e.message, true); } break; }
       case 'install': if (installEvt) { installEvt.prompt(); installEvt = null; } break;
       case 'evcsv': {
         const ev = patientList().filter((x) => x.done && x.c.phone && x.c.adConsent);

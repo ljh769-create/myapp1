@@ -5,7 +5,7 @@ services:
     runtime: node
     region: singapore        # 한국에서 가장 가까운 Render 리전
     plan: starter            # 영구 디스크는 유료 플랜에서만 가능 (요금은 Render에서 확인)
-    buildCommand: echo "no build"
+    buildCommand: npm install --omit=dev   # 사진 읽기용 Claude SDK 설치
     startCommand: node server.js
     healthCheckPath: /
     envVars:
@@ -31,6 +31,8 @@ services:
         sync: false          # 발신번호 (문자 대체발송)
       - key: ALIMTALK_TPL_SHIPPED
         sync: false          # 승인된 '한약 발송 안내' 템플릿 ID
+      - key: ANTHROPIC_API_KEY
+        sync: false          # 선택: 차트·처방전 사진으로 카드 채우기 (Claude API 키)
       - key: CLINIC_NAME
         sync: false          # 화면에 표시할 한의원 이름 (배포 시 입력)
       - key: DATA_DIR

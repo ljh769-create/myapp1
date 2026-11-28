@@ -71,6 +71,20 @@
       };
     });
   }
+  // 사진을 긴 변 1600px JPEG로 줄여 base64로
+  function shrink(file) {
+    return new Promise((ok, no) => {
+      const img = new Image(), url = URL.createObjectURL(file);
+      img.onload = () => {
+        const k = Math.min(1, 1600 / Math.max(img.width, img.height));
+        const c = document.createElement('canvas'); c.width = Math.round(img.width * k); c.height = Math.round(img.height * k);
+        c.getContext('2d').drawImage(img, 0, 0, c.width, c.height); URL.revokeObjectURL(url);
+        ok(c.toDataURL('image/jpeg', 0.85).split(',')[1]);
+      };
+      img.onerror = () => { URL.revokeObjectURL(url); no(new Error('사진을 열 수 없어요.')); };
+      img.src = url;
+    });
+  }
   const roundTxt = (o) => (o.round ? `${o.round}${o.total ? '/' + o.total : '회차'}` : '');
 
   function toast(msg, err) {
@@ -114,7 +128,7 @@
           <div class="me">지금 사용자: <b>${esc(me())}</b> · <a href="#" data-a="whoami">바꾸기</a></div>
         </div>
         <div class="htabs">
-          ${[['alarm', `⏰ 15일 알람${dueCount() ? ` (${dueCount()})` : ''}`], ['board', `진행판`], ['today', '오늘 요약(단톡용)'], ['stock', '상비 재고'], ['settings', '설정']]
+          ${[['alarm', `⏰ 15일 알람${dueCount() ? ` (${dueCount()})` : ''}`], ['board', `진행판`], ['patients', '환자'], ['today', '오늘 요약(단톡용)'], ['stock', '상비 재고'], ['settings', '설정']]
             .map(([k, l]) => `<button class="${tab === k ? 'on' : ''}" data-tab="${k}">${l}</button>`).join('')}
         </div>
         <div id="body"></div>
@@ -126,6 +140,7 @@
     if (tab === 'board') body.innerHTML = boardHTML(counts);
     if (tab === 'today') body.innerHTML = todayHTML();
     if (tab === 'stock') body.innerHTML = stockHTML();
+    if (tab === 'patients') body.innerHTML = patientsHTML();
     if (tab === 'settings') body.innerHTML = settingsHTML();
     const s = body.querySelector('.search');
     if (s) { s.value = q; s.oninput = () => { q = s.value.trim(); const pos = s.selectionStart; render(); const n = $app.querySelector('.search'); n.focus(); n.setSelectionRange(pos, pos); }; }
@@ -235,6 +250,7 @@
     return `
       ${lw.length ? `<div class="warnbox" data-tab="stock" style="cursor:pointer">⚠ <b>재고 부족 — 주문/제작 필요</b><br>${lw.map((x) => `${esc(x.name)} ${x.qty}${esc(x.unit)}${x.min ? ` (최소 ${x.min})` : ''}`).join(' · ')}</div>` : ''}
       ${(() => { const t = S.orders.filter(needTrack); return t.length ? `<div class="warnbox">📦 <b>로젠 접수할 택배 ${t.length}건</b>: ${t.map((o) => `<a href="#" data-track="${o.id}">${esc(o.patient)} ${esc(roundTxt(o))}</a>`).join(' · ')}</div>` : ''; })()}
+      ${S.photoRead ? '<p><button class="ab p" data-a="newphoto" style="width:100%;min-height:50px;font-size:17px">📷 사진 찍어서 새 카드</button></p>' : ''}
       <div class="rule"><b>규칙</b> ① 조제 전에 <b>조제 시작</b>을 눌러 내 이름을 건다 ② 처방전 없으면 조제 버튼이 안 나온다 ③ <b>조제완료</b>(보관 위치 기록)가 된 약만 발송할 수 있다</div>
       <input class="search" type="search" placeholder="환자 이름·처방·메모 검색">
       <div class="cols">
@@ -352,6 +368,59 @@
       <div class="hist">${(S.stockLog || []).slice(0, 40).map((l) => `<div><time>${fmt(l.at)}</time><b>${esc(l.by)}</b> ${esc(l.name)} ${l.delta > 0 ? '+' : ''}${l.delta} → ${l.after} · ${esc(l.reason)}</div>`).join('') || '<div class="empty">기록 없음</div>'}</div>`;
   }
 
+  // ---------- 환자 (진행 중 / 진행 끝) ----------
+  const OPEN_ST = ['need_rx', 'rx_ready', 'compounding', 'done', 'hold', 'recall'];
+  function patientList() {
+    const by = new Map();
+    for (const o of S.orders) { if (!by.has(o.patient)) by.set(o.patient, []); by.get(o.patient).push(o); }
+    return [...by].map(([name, list]) => {
+      const sent = list.filter((o) => o.status === 'sent').sort((a, b) => (b.sentAt || '').localeCompare(a.sentAt || ''));
+      const last = sent[0];
+      const open = list.some((o) => OPEN_ST.includes(o.status));
+      // 끝: 진행 중 카드가 없고, 마지막 발송이 마지막 회차(또는 회차 정보 없음)
+      const done = !open && !!last && (!last.total || !last.round || last.round >= last.total);
+      return { name, list, last, open, done, formulas: [...new Set(list.map((o) => o.formula).filter(Boolean))], c: contact(name) };
+    });
+  }
+  const quarter = (d = new Date()) => `${d.getFullYear()}년 ${Math.floor(d.getMonth() / 3) + 1}분기`;
+  function patientsHTML() {
+    const all = patientList().filter((x) => !q || x.name.includes(q));
+    const active = all.filter((x) => !x.done), done = all.filter((x) => x.done).sort((a, b) => (b.last.sentAt || '').localeCompare(a.last.sentAt || ''));
+    const ev = done.filter((x) => x.c.phone && x.c.adConsent);
+    const row = (x) => `<div class="hcard ${x.done ? 'sent' : 'rx_ready'}">
+      <div><b class="nm">${esc(x.name)}</b> ${x.last ? `<span class="rd">${esc(roundTxt(x.last))}</span>` : ''}
+        ${x.c.phone ? `<span class="badge">📱 ${esc(maskPhone(x.c.phone))}</span>` : '<span class="badge">📵 연락처 없음</span>'}
+        ${x.c.adConsent ? '<span class="badge">이벤트 동의</span>' : ''}</div>
+      <div class="meta">${esc(x.formulas.join(', ') || '처방 미기재')} · 카드 ${x.list.length}장${x.last ? ` · 마지막 발송 ${fmt(x.last.sentAt)}` : ''}</div>
+      <div class="acts"><button class="ab" data-pcontact="${esc(x.name)}">연락처·동의</button>${x.done ? `<button class="ab" data-again="${esc(x.name)}">재처방 카드 만들기</button>` : ''}</div>
+    </div>`;
+    return `<input class="search" type="search" placeholder="환자 이름 검색">
+      <div class="rule"><b>${quarter()} 이벤트 안내 대상</b>: 진행이 끝났고 <b>이벤트 수신 동의</b>를 받은 환자 <b>${ev.length}명</b>
+        <br>이벤트·할인 안내는 광고라서 <b>이벤트 수신 동의</b>를 따로 받은 환자에게만 보낼 수 있어요. 문구는 의료광고 심의 기준을 지켜야 해요.
+        <p style="margin:8px 0 0"><button class="ab p" data-a="evcsv" ${ev.length ? '' : 'disabled'}>⬇ 대상 명단 받기 (솔라피 대량발송용)</button></p></div>
+      <div class="cols">
+        <div class="col compounding"><h2>진행 중 <span>${active.length}</span></h2>${active.map(row).join('') || '<div class="empty">없음</div>'}</div>
+        <div class="col"><h2>진행 끝 <span>${done.length}</span></h2>${done.map(row).join('') || '<div class="empty">없음</div>'}</div>
+      </div>`;
+  }
+  function openContact(name) {
+    const c = contact(name);
+    sheet(`<h3>${esc(name)} 연락처·동의</h3>
+      <form id="pc">
+        <label class="f"><span>휴대폰 번호</span><input name="phone" type="tel" value="${esc(c.phone)}" placeholder="01012345678"></label>
+        <label class="f" style="display:flex;gap:8px;align-items:center"><input type="checkbox" name="consent" style="width:auto" ${c.consent ? 'checked' : ''}> 알림톡(조제·배송 안내) 수신 동의</label>
+        <label class="f" style="display:flex;gap:8px;align-items:center"><input type="checkbox" name="ad" style="width:auto" ${c.adConsent ? 'checked' : ''}> 이벤트·할인 안내(광고) 수신 동의 <small>(따로 받은 경우만)</small></label>
+        <div class="okrow"><button type="button" class="ab" data-close>닫기</button><button class="ab p">저장</button></div>
+      </form>`, (el) => {
+      const f = el.querySelector('#pc');
+      f.onsubmit = async (e) => {
+        e.preventDefault();
+        try { await api('POST', '/api/herb/contact', { patient: name, phone: f.phone.value, consent: f.consent.checked, adConsent: f.ad.checked }); el.remove(); toast('저장했어요'); load(); }
+        catch (err) { toast(err.message, true); }
+      };
+    });
+  }
+
   // ---------- 설정 ----------
   function settingsHTML() {
     return `<div class="panel" style="background:#fff;border:1px solid var(--line);border-radius:14px;padding:16px">
@@ -388,6 +457,7 @@
   function openNew(pre = {}) {
     const chips = (name, list) => (list && list.length > 1 ? `<div class="seg cand" data-cand="${name}">${list.slice(0, 8).map((v) => `<button type="button">${esc(v)}</button>`).join('')}</div>` : '');
     sheet(`<h3>새 한약 카드</h3>
+      ${S.photoRead ? `<p><label class="ab p" style="display:block;text-align:center;font-size:17px;min-height:50px;line-height:32px;cursor:pointer">📷 차트·처방전 사진으로 채우기<input type="file" accept="image/*" capture="environment" id="photo" hidden></label></p><div id="photomsg"></div>` : ''}
       ${pre.fromChart ? '<div class="warnbox" style="background:var(--gl);color:var(--gd)">차트 화면에서 읽어 왔어요. <b>이름·처방이 맞는지 확인</b>하고, 후보가 여러 개면 맞는 것을 눌러 주세요.</div>' : ''}
       <form id="nf">
         <label class="f"><span>환자 이름 *</span><input name="patient" required autocomplete="off" value="${esc(pre.patient || '')}"></label>${chips('patient', pre.patients)}
@@ -403,6 +473,7 @@
         <div class="f"><span>받는 방법</span>${segHTML('delivery', [['택배', '택배'], ['직수', '직수'], ['내원', '내원']], '택배')}</div>
         <label class="f"><span>휴대폰 번호 (알림톡용 · 선택)</span><input name="phone" type="tel" placeholder="01012345678"></label>
         <label class="f" style="display:flex;gap:8px;align-items:center"><input type="checkbox" name="consent" style="width:auto"> 알림톡 수신 동의 받음</label>
+        <label class="f" style="display:flex;gap:8px;align-items:center"><input type="checkbox" name="adConsent" style="width:auto"> 이벤트·할인 안내(광고) 수신 동의 받음</label>
         <label class="f"><span>메모</span><textarea name="note" rows="2" placeholder="예: 전화로 지을 예정, 처방전 있는지 확인">${esc(pre.note || '')}</textarea></label>
         <div class="err" id="ne"></div>
         <div class="okrow"><button type="button" class="ab" data-close>취소</button><button class="ab p">만들기</button></div>
@@ -425,7 +496,7 @@
         if (!f.formula.value && past.formula) f.formula.value = past.formula;
         const setSeg = (n, v) => el.querySelectorAll(`[data-seg="${n}"] button`).forEach((b) => b.classList.toggle('on', b.dataset.v === v));
         setSeg('delivery', past.delivery); setSeg('kind', past.kind);
-        const c = contact(nm); if (c.phone && !f.phone.value) f.phone.value = c.phone; if (c.consent) f.consent.checked = true;
+        const c = contact(nm); if (c.phone && !f.phone.value) f.phone.value = c.phone; if (c.consent) f.consent.checked = true; if (c.adConsent) f.adConsent.checked = true;
       };
       el.querySelectorAll('[data-cand]').forEach((g) => g.addEventListener('click', (e) => {
         const b = e.target.closest('button'); if (!b) return;
@@ -435,13 +506,33 @@
       }));
       f.patient.addEventListener('input', warn);
       f.patient.addEventListener('change', fillNext);
+      const ph = el.querySelector('#photo');
+      if (ph) ph.onchange = async () => {
+        const file = ph.files[0]; if (!file) return;
+        const msg = el.querySelector('#photomsg');
+        msg.innerHTML = '<div class="warnbox" style="background:var(--gl);color:var(--gd)">⏳ 사진 읽는 중… (5~15초)</div>';
+        try {
+          const d = await api('POST', '/api/herb/scan', { image: await shrink(file) });
+          const set = (k, v) => { if (v) f[k].value = v; };
+          set('patient', d.patient); set('formula', d.formula); set('round', d.round); set('total', d.total); set('phone', d.phone);
+          if (d.chartNo && !f.note.value.includes(d.chartNo)) f.note.value = [f.note.value, `차트번호 ${d.chartNo}`, d.memo].filter(Boolean).join(' / ');
+          else if (d.memo) f.note.value = [f.note.value, d.memo].filter(Boolean).join(' / ');
+          if (d.delivery) el.querySelectorAll('[data-seg="delivery"] button').forEach((b) => b.classList.toggle('on', b.dataset.v === d.delivery));
+          const others = d.otherNames.filter((n) => n !== d.patient);
+          msg.innerHTML = `<div class="warnbox" style="background:var(--gl);color:var(--gd)">📷 사진에서 읽었어요. <b>이름·처방·회차가 맞는지 꼭 확인</b>하세요.${d.patient ? '' : '<br><b>환자 이름을 못 읽었어요.</b> 직접 넣어 주세요.'}</div>`
+            + (others.length ? `<div class="seg cand">${others.map((n) => `<button type="button" data-pick="${esc(n)}">${esc(n)}</button>`).join('')}</div>` : '');
+          msg.querySelectorAll('[data-pick]').forEach((b) => (b.onclick = () => { f.patient.value = b.dataset.pick; warn(); fillNext(); }));
+          warn(); fillNext();
+        } catch (err) { msg.innerHTML = `<div class="warnbox">${esc(err.message)}</div>`; }
+        ph.value = '';
+      };
       if (f.patient.value) { warn(); fillNext(); }
       f.onsubmit = async (e) => {
         e.preventDefault();
         const body = {
           patient: f.patient.value, formula: f.formula.value, round: f.round.value || null, total: f.total.value || null,
           hasRx: segVal(el, 'rx') === '1', kind: segVal(el, 'kind'), delivery: segVal(el, 'delivery'), note: f.note.value,
-          phone: f.phone.value, consent: f.consent.checked,
+          phone: f.phone.value, consent: f.consent.checked, adConsent: f.adConsent.checked,
         };
         try { await api('POST', '/api/herb/orders', body); el.remove(); toast('카드를 만들었어요'); load(); }
         catch (err) {
@@ -597,11 +688,13 @@
 
   // ---------- 이벤트 ----------
   document.addEventListener('click', async (e) => {
-    const t = e.target.closest('[data-tab],[data-a],[data-move],[data-open],[data-me],[data-stock],[data-stockset],[data-stockin],[data-stockmin],[data-follow],[data-track]');
+    const t = e.target.closest('[data-tab],[data-a],[data-move],[data-open],[data-me],[data-stock],[data-stockset],[data-stockin],[data-stockmin],[data-follow],[data-track],[data-pcontact],[data-again]');
     if (!t) return;
     if (t.tagName === 'A') e.preventDefault();
     if (t.dataset.tab) { tab = t.dataset.tab; render(); return; }
     if (t.dataset.me) { localStorage.setItem(LS.me, t.dataset.me); render(); openPending(); return; }
+    if (t.dataset.pcontact) return openContact(t.dataset.pcontact);
+    if (t.dataset.again) { tab = 'board'; render(); openNew(); const f = document.querySelector('#nf'); f.patient.value = t.dataset.again; f.round.value = 1; f.patient.dispatchEvent(new Event('input')); f.patient.dispatchEvent(new Event('change')); return; }
     if (t.dataset.track) { document.querySelectorAll('.sheet').forEach((x) => x.remove()); return openTrack(t.dataset.track); }
     if (t.dataset.follow) return follow(t.dataset.follow, t.dataset.p);
     if (t.dataset.move) return move(t.dataset.move, t.dataset.to);
@@ -620,6 +713,15 @@
     switch (t.dataset.a) {
       case 'whoami': localStorage.removeItem(LS.me); render(); break;
       case 'new': openNew(); break;
+      case 'evcsv': {
+        const ev = patientList().filter((x) => x.done && x.c.phone && x.c.adConsent);
+        const rows = [['이름', '휴대폰', '마지막 처방', '마지막 발송일'], ...ev.map((x) => [x.name, x.c.phone, x.last.formula || '', (x.last.sentAt || '').slice(0, 10)])];
+        const csv = '\ufeff' + rows.map((r) => r.map((v) => `"${String(v).replace(/"/g, '""')}"`).join(',')).join('\r\n');
+        const a = document.createElement('a');
+        a.href = URL.createObjectURL(new Blob([csv], { type: 'text/csv' })); a.download = `이벤트대상_${quarter().replace(/\s/g, '')}.csv`; a.click();
+        break;
+      }
+      case 'newphoto': openNew(); document.querySelector('#photo')?.click(); break;
       case 'depart': openDepart(); break;
       case 'togglesent': showSent = !showSent; render(); break;
       case 'copy':

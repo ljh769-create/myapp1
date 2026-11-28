@@ -66,4 +66,46 @@ async function read(imageB64) {
   }
 }
 
-module.exports = { read, enabled };
+// 조제 사진 분류: 이름 라벨이 꽂힌 약재 사진 / 저울 무게 사진 / 기타
+const LABEL_SCHEMA = {
+  type: 'object',
+  additionalProperties: false,
+  required: ['kind', 'name', 'weight', 'date'],
+  properties: {
+    kind: { type: 'string', enum: ['label', 'scale', 'other'], description: 'label: 환자 이름 라벨이 보이는 약재 사진, scale: 저울 숫자 사진, other: 그 밖' },
+    name: { type: 'string', description: '라벨의 환자 이름 ("님" 빼고 한글만). 안 보이면 빈 문자열' },
+    weight: { type: 'integer', description: '저울에 표시된 그램 숫자. 저울 사진이 아니거나 안 읽히면 0' },
+    date: { type: 'string', description: '라벨의 조제일 YYYY-MM-DD. 없으면 빈 문자열' },
+  },
+};
+const LABEL_PROMPT = `한의원에서 한약 조제를 마치고 찍은 사진입니다. 두 종류가 있어요.
+- label: 약재가 담긴 봉투에 "OOO님 / 처방한의사 / 조제일" 라벨이 꽂힌 사진 → 환자 이름과 조제일을 읽으세요.
+- scale: 디지털 저울(DRETEC 등)의 숫자 화면 → 표시된 그램 숫자를 읽으세요.
+보이는 글자만 옮기고, 흐려서 확실하지 않으면 빈 값(숫자는 0)으로 두세요.`;
+
+async function readLabel(imageB64) {
+  if (!enabled()) return { ok: false, error: '사진 읽기 미설정 (ANTHROPIC_API_KEY)' };
+  try {
+    const res = await getClient().beta.messages.create({
+      model: MODEL,
+      max_tokens: 2000,
+      betas: ['server-side-fallback-2026-07-01'],
+      fallbacks: 'default',
+      output_config: { effort: 'low', format: { type: 'json_schema', schema: LABEL_SCHEMA } },
+      messages: [{ role: 'user', content: [
+        { type: 'image', source: { type: 'base64', media_type: 'image/jpeg', data: imageB64 } },
+        { type: 'text', text: LABEL_PROMPT },
+      ] }],
+    });
+    if (res.stop_reason === 'refusal' || res.stop_reason === 'max_tokens') return { ok: false, error: '사진을 읽지 못했어요.' };
+    return { ok: true, data: JSON.parse(res.content.filter((b) => b.type === 'text').map((b) => b.text).join('')) };
+  } catch (e) {
+    if (e instanceof Anthropic.RateLimitError) return { ok: false, error: '요청이 많아요. 잠시 후 다시 해주세요.' };
+    if (e instanceof Anthropic.AuthenticationError) return { ok: false, error: '사진 읽기 키가 잘못됐어요 (관리자 확인).' };
+    if (e instanceof Anthropic.APIError) return { ok: false, error: `사진 읽기 서버 오류 (${e.status || '연결'})` };
+    if (e instanceof SyntaxError) return { ok: false, error: '읽은 결과를 해석하지 못했어요.' };
+    throw e;
+  }
+}
+
+module.exports = { read, readLabel, enabled };

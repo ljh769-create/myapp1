@@ -96,9 +96,9 @@
     };
     return () => files;
   }
-  async function uploadPhotos(id, files, notify = true) {
-    const photos = []; for (const f of files) photos.push(await shrink(f, 1280));
-    return api('POST', `/api/herb/orders/${id}`, { photos, notify });
+  async function uploadPhotos(id, files, notify = true, scaleFiles = [], weight = null) {
+    const enc = async (arr) => { const out = []; for (const f of arr) out.push(typeof f === 'string' ? f : await shrink(f, 1280)); return out; };
+    return api('POST', `/api/herb/orders/${id}`, { photos: await enc(files), scalePhotos: await enc(scaleFiles), weight, notify });
   }
   const msgToast = (m, okText) => (m ? (m.ok ? okText : m.error === '알림톡 미설정' ? '' : ` · 카톡 안 보냄(${m.error})`) : '');
   const md2 = (d) => (d ? `${Number(d.slice(5, 7))}.${Number(d.slice(8, 10))}` : '');
@@ -299,7 +299,7 @@
     return `
       ${lw.length ? `<div class="warnbox" data-tab="stock" style="cursor:pointer">⚠ <b>재고 부족 — 주문/제작 필요</b><br>${lw.map((x) => `${esc(x.name)} ${x.qty}${esc(x.unit)}${x.min ? ` (최소 ${x.min})` : ''}`).join(' · ')}</div>` : ''}
       ${(() => { const t = S.orders.filter(needTrack); return t.length ? `<div class="warnbox">📦 <b>로젠 접수할 택배 ${t.length}건</b>: ${t.map((o) => `<a href="#" data-track="${o.id}">${esc(o.patient)} ${esc(roundTxt(o))}</a>`).join(' · ')}</div>` : ''; })()}
-      ${S.photoRead ? '<p><button class="ab p" data-a="newphoto" style="width:100%;min-height:50px;font-size:17px">📷 사진 찍어서 새 카드</button></p>' : ''}
+      ${S.photoRead ? `<div class="two" style="margin-bottom:10px"><button class="ab p" data-a="newphoto" style="min-height:50px">📷 사진으로 새 카드</button><button class="ab p" data-a="batch" style="min-height:50px">🏷 조제 사진 한꺼번에</button></div>` : ''}
       <div class="rule"><b>규칙</b> ① 조제 전에 <b>조제 시작</b>을 눌러 내 이름을 건다 ② 처방전 없으면 조제 버튼이 안 나온다 ③ <b>조제완료</b>(보관 위치 기록)가 된 약만 발송할 수 있다</div>
       <input class="search" type="search" placeholder="환자 이름·처방·메모 검색">
       <div class="cols">
@@ -342,6 +342,7 @@
         ${o.tracking ? `<span class="badge">✅ 송장 ${esc(o.tracking.slice(-4))}</span>` : ''}
         ${o.dueDate && ['need_rx', 'rx_ready'].includes(o.status) ? (o.dueDate > S.today ? `<span class="badge">📅 ${md2(o.dueDate)} 조제 예정</span>` : '<span class="badge r">📅 조제할 차례</span>') : ''}
         ${(o.photos || []).length ? `<span class="badge">📷 ${o.photos.length}</span>` : ''}
+        ${o.weight ? `<span class="badge">⚖️ ${o.weight}g</span>` : ''}
         ${o.delivery === '택배' && o.status !== 'sent' && msgWhy(o.patient) === '연락처 없음' ? '<span class="badge">📵 연락처 없음</span>' : ''}</div>
       <div class="meta">${esc(o.formula || '처방 미기재')}${o.pkgDays ? ` · 🗓 ${o.pkgDays}일 패키지(~${md2(o.pkgEnd)})` : ''}${o.location ? ' · 📦 ' + esc(o.location) : ''} · ${fmt(o.updatedAt)}</div>
       ${o.assignee ? `<div class="who">조제: <b>${esc(o.assignee)}</b></div>` : ''}
@@ -520,6 +521,94 @@
       await api('POST', '/api/herb/push/subscribe', { sub: sub.toJSON() });
       toast('알림을 켰어요'); await load(); pushStatus();
     } catch (e) { toast('알림을 켜지 못했어요: ' + e.message, true); }
+  }
+
+  // ---------- 조제 사진 한꺼번에 올리기 ----------
+  // 단톡방에 올리던 사진(라벨 → 저울 순서)을 그대로 골라 올리면, 라벨 이름으로 카드에 나눠 붙이고 한 번에 조제완료
+  function openBatch() {
+    sheet(`<h3>🏷 조제 사진 한꺼번에 올리기</h3>
+      <p class="sub">여러 환자의 <b>라벨 사진 → 저울 사진</b>을 찍은 순서대로 고르세요. 앱이 라벨의 이름을 읽어 카드에 나눠 붙여요.</p>
+      <div class="two"><label class="ab p" style="text-align:center;min-height:48px;line-height:30px;cursor:pointer">🖼 사진 고르기<input type="file" accept="image/*" multiple id="bpick" hidden></label>
+      <label class="ab" style="text-align:center;min-height:48px;line-height:30px;cursor:pointer">📷 바로 찍기<input type="file" accept="image/*" capture="environment" multiple id="bcam" hidden></label></div>
+      <div id="bbody"></div>`, (el) => {
+      const files = [];
+      const start = async () => {
+        const body = el.querySelector('#bbody');
+        body.innerHTML = `<div class="warnbox" style="background:var(--gl);color:var(--gd)">⏳ 사진 ${files.length}장 읽는 중… <span id="bprog">0</span>/${files.length}</div>`;
+        const items = files.map((f) => ({ f, data: null, r: null }));
+        let done = 0, i = 0;
+        const worker = async () => {
+          while (i < items.length) {
+            const it = items[i++];
+            try { it.data = await shrink(it.f, 1280); it.r = await api('POST', '/api/herb/scan-label', { image: it.data }); }
+            catch (e) { it.r = { kind: 'other', name: '', weight: null, error: e.message }; }
+            el.querySelector('#bprog') && (el.querySelector('#bprog').textContent = ++done);
+          }
+        };
+        await Promise.all([worker(), worker(), worker()]);
+        // 순서대로 묶기: 라벨이 나오면 새 환자, 저울/기타는 바로 앞 환자에 붙임
+        const groups = []; let cur = null;
+        for (const it of items) {
+          if (it.r.kind === 'label' && it.r.name && (!cur || cur.name !== it.r.name)) { cur = { name: it.r.name, labels: [], scales: [], weight: null }; groups.push(cur); }
+          if (!cur) { cur = { name: '', labels: [], scales: [], weight: null }; groups.push(cur); }
+          if (it.r.kind === 'scale') { cur.scales.push(it.data); if (it.r.weight) cur.weight = it.r.weight; }
+          else cur.labels.push(it.data);
+        }
+        renderReview(el, groups);
+      };
+      const add = (inp) => (inp.onchange = () => { for (const f of inp.files) if (files.length < 40) files.push(f); inp.value = ''; if (files.length) start(); });
+      add(el.querySelector('#bpick')); add(el.querySelector('#bcam'));
+    });
+  }
+  function renderReview(el, groups) {
+    const cands = S.orders.filter((o) => ['compounding', 'rx_ready', 'done', 'need_rx'].includes(o.status));
+    const rank = { compounding: 0, rx_ready: 1, done: 2, need_rx: 3 };
+    for (const g of groups) {
+      const m = cands.filter((o) => o.patient === g.name).sort((a, b) => rank[a.status] - rank[b.status] || (a.round || 0) - (b.round || 0))[0];
+      g.card = m ? m.id : '';
+    }
+    const opt = (g) => `<option value="">— 건너뛰기 —</option>` + cands.map((o) => `<option value="${o.id}" ${o.id === g.card ? 'selected' : ''}>${esc(o.patient)} ${esc(roundTxt(o))} · ${esc(S.statuses[o.status])}</option>`).join('');
+    el.querySelector('#bbody').innerHTML = `
+      ${groups.map((g, k) => `<div class="hcard ${g.card ? 'done' : 'recall'}" data-g="${k}">
+        <div><b class="nm">${esc(g.name || '이름 못 읽음')}</b> <span class="badge">🏷 ${g.labels.length}</span> <span class="badge">⚖️ ${g.scales.length}</span></div>
+        <div class="thumbs">${[...g.labels, ...g.scales].slice(0, 6).map((d) => `<img src="data:image/jpeg;base64,${d}">`).join('')}</div>
+        <label class="f"><span>붙일 카드</span><select data-card>${opt(g)}</select></label>
+        <div data-warn></div>
+        <label class="f"><span>무게 (g)</span><input data-wt type="number" inputmode="numeric" value="${g.weight || ''}"></label>
+      </div>`).join('')}
+      <div class="f"><span>보관 위치 (모두)</span><div class="seg" id="bloc">${['냉동', '냉장', '택배 선반', '데스크'].map((x, i) => `<button type="button" class="${i === 0 ? 'on' : ''}" data-v="${x}">${x}</button>`).join('')}</div></div>
+      ${S.kakaoPhoto ? '<label class="f" style="display:flex;gap:8px;align-items:center"><input type="checkbox" id="bsend" checked style="width:auto"> 라벨 사진을 환자에게 카톡으로 보내기 (수신동의 환자만)</label>' : ''}
+      <div class="okrow"><button class="ab" data-close>취소</button><button class="ab p" id="bok">확인 · 한 번에 조제완료</button></div>`;
+    const warn = (box) => {
+      const o = S.orders.find((x) => x.id === box.querySelector('[data-card]').value);
+      box.className = `hcard ${o ? (o.status === 'need_rx' ? 'recall' : 'done') : 'hold'}`;
+      box.querySelector('[data-warn]').innerHTML = o && o.status === 'need_rx' ? '<div class="warnbox">⛔ 처방전이 없는 카드예요. 처방전 받음 처리 후 올려 주세요.</div>' : '';
+    };
+    el.querySelectorAll('[data-g]').forEach((box) => { warn(box); box.querySelector('[data-card]').onchange = () => warn(box); });
+    bindSeg(el);
+    el.querySelector('#bloc').onclick = (e) => { const b = e.target.closest('button'); if (!b) return; el.querySelectorAll('#bloc button').forEach((x) => x.classList.toggle('on', x === b)); };
+    el.querySelector('#bok').onclick = async () => {
+      const btn = el.querySelector('#bok'); btn.disabled = true;
+      const loc = el.querySelector('#bloc .on')?.dataset.v || '냉동';
+      const send = !!el.querySelector('#bsend')?.checked;
+      const res = [];
+      for (const box of el.querySelectorAll('[data-g]')) {
+        const g = groups[Number(box.dataset.g)], id = box.querySelector('[data-card]').value;
+        if (!id) continue;
+        await load();
+        let o = S.orders.find((x) => x.id === id);
+        try {
+          if (!o) throw new Error('카드를 찾을 수 없어요');
+          if (o.status === 'need_rx') throw new Error('처방전 없음');
+          if (o.status === 'rx_ready') o = await api('POST', `/api/herb/orders/${id}/move`, { to: 'compounding', version: o.version });
+          if (o.status === 'compounding') o = await api('POST', `/api/herb/orders/${id}/move`, { to: 'done', version: o.version, location: loc });
+          const r = await uploadPhotos(id, g.labels, send, g.scales, Number(box.querySelector('[data-wt]').value) || null);
+          res.push(`✅ ${o.patient} ${roundTxt(o)}${r.weight ? ` ${r.weight}g` : ''}${msgToast(r.msg, ' · 카톡')}`);
+        } catch (e) { res.push(`❌ ${g.name || '이름 없음'}: ${e.message}`); }
+      }
+      el.querySelector('#bbody').innerHTML = `<div class="hist">${res.map((x) => `<div>${esc(x)}</div>`).join('') || '<div>처리한 카드가 없어요</div>'}</div><div class="okrow"><button class="ab p" data-close>닫기</button></div>`;
+      load();
+    };
   }
 
   // ---------- 설정 ----------
@@ -706,22 +795,25 @@
         ${o.status === 'compounding' && o.assignee && o.assignee !== me() ? `<div class="warnbox">${esc(o.assignee)}님이 조제중인 카드예요. 정말 완료된 걸 확인했나요?</div>` : ''}
         <label class="f"><span>보관 위치 *</span><input id="loc" value="${esc(o.location)}" placeholder="예: 냉동 A칸, 택배 선반"></label>
         <div class="seg" style="margin-bottom:6px">${['냉동', '냉장', '택배 선반', '데스크'].map((x) => `<button type="button" data-loc="${x}">${x}</button>`).join('')}</div>
-        <div class="f"><span>한약 사진 (환자에게 카톡으로 보낼 수 있어요)</span>${photoInput('dph')}</div>
+        <div class="f"><span>🏷 라벨 사진 (환자에게 카톡으로 가요)</span>${photoInput('dph')}</div>
+        <div class="f"><span>⚖️ 저울 사진 (내부 기록용, 환자에게 안 감)</span>${photoInput('dsc')}</div>
+        <label class="f"><span>무게 (g)</span><input id="wt" type="number" inputmode="numeric" min="1" max="20000" placeholder="예: 868"></label>
         ${S.kakaoPhoto ? `<label class="f" style="display:flex;gap:8px;align-items:center"><input type="checkbox" id="sendph" style="width:auto" checked ${msgWhy(o.patient) ? 'disabled' : ''}> 사진을 환자에게 카톡으로 보내기 ${msgWhy(o.patient) ? `<small>(${esc(msgWhy(o.patient))})</small>` : `<small>${esc(maskPhone(contact(o.patient).phone))}</small>`}</label>` : ''}
         ${o.status === 'compounding' ? useHTML('done', (x) => (x.name === '파우치' ? '' : x.name === '쌍화탕 박스' ? '' : '')) : ''}
         <label class="f"><span>메모 (선택)</span><input id="mn"></label>
         <div class="okrow"><button class="ab" data-close>취소</button><button class="ab p" id="ok">완료</button></div>`, (el) => {
         el.querySelectorAll('[data-loc]').forEach((b) => (b.onclick = () => { el.querySelector('#loc').value = b.dataset.loc; }));
-        const getPh = bindPhotoInput(el, 'dph');
+        const getPh = bindPhotoInput(el, 'dph'), getSc = bindPhotoInput(el, 'dsc');
         el.querySelector('#ok').onclick = async () => {
           try {
             await api('POST', `/api/herb/orders/${id}/move`, { ...body, location: el.querySelector('#loc').value, note: el.querySelector('#mn').value, use: readUse(el, 'done') });
             el.remove();
             let extra = '';
-            if (getPh().length) {
+            const wt = Number(el.querySelector('#wt').value) || null;
+            if (getPh().length || getSc().length || wt) {
               toast('조제완료 · 사진 올리는 중…');
-              const r = await uploadPhotos(id, getPh(), !!el.querySelector('#sendph')?.checked);
-              extra = ` · 사진 ${r.photos}장` + msgToast(r.msg, ' · 카톡 보냄');
+              const r = await uploadPhotos(id, getPh(), !!el.querySelector('#sendph')?.checked, getSc(), wt);
+              extra = ` · 라벨 ${r.photos}장${r.weight ? ` · ${r.weight}g` : ''}` + msgToast(r.msg, ' · 카톡 보냄');
             }
             toast('조제완료' + extra); load();
           }
@@ -876,6 +968,7 @@
         a.href = URL.createObjectURL(new Blob([csv], { type: 'text/csv' })); a.download = `이벤트대상_${quarter().replace(/\s/g, '')}.csv`; a.click();
         break;
       }
+      case 'batch': openBatch(); break;
       case 'newphoto': openNew(); document.querySelector('#photo')?.click(); break;
       case 'depart': openDepart(); break;
       case 'togglesent': showSent = !showSent; render(); break;

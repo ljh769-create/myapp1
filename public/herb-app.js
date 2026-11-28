@@ -430,6 +430,11 @@
         <button class="ab p" data-a="savestaff">저장</button>
       </div>
       <p><a class="ab p" href="/herb-link.html" style="display:inline-block;text-decoration:none">🔗 오케이차트 연결 버튼 설치</a></p>
+      <div class="rule"><b>📱 휴대폰에 앱으로 설치</b><br>
+        ${matchMedia('(display-mode: standalone)').matches ? '✅ 지금 앱으로 쓰고 있어요.'
+          : installEvt ? '<button class="ab p" data-a="install">홈 화면에 앱 설치</button>'
+          : /iPhone|iPad/.test(navigator.userAgent) ? '사파리 아래 <b>공유(□↑)</b> → <b>홈 화면에 추가</b>'
+          : '크롬 오른쪽 위 <b>⋮</b> → <b>앱 설치</b> 또는 <b>홈 화면에 추가</b>'}</div>
       <p><button class="ab" data-a="csv">⬇ 전체 목록 엑셀(CSV) 받기</button></p>
       <p><button class="ab w" data-a="logout">로그아웃</button></p>`;
   }
@@ -713,6 +718,7 @@
     switch (t.dataset.a) {
       case 'whoami': localStorage.removeItem(LS.me); render(); break;
       case 'new': openNew(); break;
+      case 'install': if (installEvt) { installEvt.prompt(); installEvt = null; } break;
       case 'evcsv': {
         const ev = patientList().filter((x) => x.done && x.c.phone && x.c.adConsent);
         const rows = [['이름', '휴대폰', '마지막 처방', '마지막 발송일'], ...ev.map((x) => [x.name, x.c.phone, x.last.formula || '', (x.last.sentAt || '').slice(0, 10)])];
@@ -755,6 +761,11 @@
   // 다른 직원이 바꾼 내용을 자주 반영
   setInterval(() => { if (!document.hidden && !document.querySelector('.sheet') && localStorage.getItem(LS.token)) load(); }, 20000);
   document.addEventListener('visibilitychange', () => { if (!document.hidden && localStorage.getItem(LS.token)) load(); });
+
+  // 앱으로 설치 (안드로이드 크롬: 설치 버튼 / 아이폰 사파리: 공유 → 홈 화면에 추가)
+  let installEvt = null;
+  window.addEventListener('beforeinstallprompt', (e) => { e.preventDefault(); installEvt = e; if (tab === 'settings') render(); });
+  if ('serviceWorker' in navigator) navigator.serviceWorker.register('/sw.js').catch(() => {});
 
   render();
   if (localStorage.getItem(LS.token)) load();

@@ -1,0 +1,17 @@
+{
+  "id": "/herb",
+  "name": "한약 진행 (직원용)",
+  "short_name": "한약 진행",
+  "description": "한약 조제·발송 진행 관리",
+  "start_url": "/herb",
+  "scope": "/herb",
+  "display": "standalone",
+  "background_color": "#f6f4ef",
+  "theme_color": "#2f6f5e",
+  "lang": "ko",
+  "icons": [
+    { "src": "/icons/icon-192.png", "sizes": "192x192", "type": "image/png", "purpose": "any" },
+    { "src": "/icons/icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "any" },
+    { "src": "/icons/icon-maskable-512.png", "sizes": "512x512", "type": "image/png", "purpose": "maskable" }
+  ]
+}

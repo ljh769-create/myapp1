@@ -2,7 +2,7 @@
 //  SOLAPI_API_KEY, SOLAPI_API_SECRET : 솔라피 콘솔 > API Key
 //  SOLAPI_PFID                       : 카카오 채널 연동 후 받는 pfId
 //  SOLAPI_FROM                       : 솔라피에 등록한 발신번호 (알림톡 실패 시 문자 대체발송에 사용)
-//  ALIMTALK_TPL_SHIPPED              : 승인된 '한약 발송 안내' 템플릿 ID
+//  ALIMTALK_TPL_SHIPPED / _PHOTO / _FOLLOWUP : 승인된 템플릿 ID (발송 안내 / 조제 사진 / 복용 안부)
 const crypto = require('crypto');
 
 const KEY = process.env.SOLAPI_API_KEY || '';
@@ -10,7 +10,12 @@ const SECRET = process.env.SOLAPI_API_SECRET || '';
 const PFID = process.env.SOLAPI_PFID || '';
 const FROM = (process.env.SOLAPI_FROM || '').replace(/[^0-9]/g, '');
 const API = process.env.SOLAPI_API_BASE || 'https://api.solapi.com';
-const TEMPLATES = { shipped: process.env.ALIMTALK_TPL_SHIPPED || '' };
+const TEMPLATES = {
+  shipped: process.env.ALIMTALK_TPL_SHIPPED || '',   // 한약 발송 안내
+  photo: process.env.ALIMTALK_TPL_PHOTO || '',       // 조제 완료 + 한약 사진 링크
+  followup: process.env.ALIMTALK_TPL_FOLLOWUP || '', // 복용 중 안부 (15일 알람)
+  welcome: process.env.ALIMTALK_TPL_WELCOME || '',   // 결제 첫날 시작 인사
+};
 
 const enabled = (type) => !!(KEY && SECRET && PFID && TEMPLATES[type]);
 

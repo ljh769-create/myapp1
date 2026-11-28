@@ -267,6 +267,8 @@ http.createServer(async (req, res) => {
   try {
     const url = new URL(req.url, 'http://localhost');
     if (url.pathname.startsWith('/api/')) return await handleApi(req, res, url);
+    if (url.pathname.startsWith('/p/')) return herb.publicPage(req, res, url);
+    if (url.pathname.startsWith('/s/')) return await herb.surveyPage(req, res, url);
     return serveStatic(req, res, url);
   } catch (e) {
     if (e instanceof SyntaxError || e.message === 'too large') return send(res, 400, { error: 'bad request' });

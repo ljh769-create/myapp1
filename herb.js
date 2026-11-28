@@ -44,6 +44,10 @@ const DEFAULT_STOCK = [
 
 // 출발일부터 CYCLE 일마다 확인 알람
 const CYCLE = 15;
+// 결제 패키지: 총 일수 (총 회차 = 일수 ÷ CYCLE, 올림)
+const PKG_PRESETS = [30, 60, 90, 180];
+const pkgDaysOf = (v) => { const n = Math.round(Number(v)); return Number.isFinite(n) && n >= CYCLE && n <= 730 ? n : 0; };
+const pkgRounds = (days) => Math.ceil(days / CYCLE);
 const kstDate = (t = Date.now()) => new Date(new Date(t).getTime() + 9 * 3600 * 1000).toISOString().slice(0, 10);
 const kstHour = () => new Date(Date.now() + 9 * 3600 * 1000).getUTCHours();
 const dayDiff = (a, b) => Math.round((Date.parse(a) - Date.parse(b)) / 86400000);
@@ -72,6 +76,8 @@ module.exports = function createHerb({ dataDir, password, secret, send, readBody
   db.phones = dict(db.phones);
   db.consent = dict(db.consent);       // 알림톡 수신 동의 { at, by }
   db.adConsent = dict(db.adConsent);
+  db.dosageByFormula = dict(db.dosageByFormula); // 처방별 마지막 복용법 (다음 카드 자동 채움)
+  db.surveys = dict(db.surveys);       // 15일 설문 { token: { patient, base, dueDate, at, answer, answeredAt } }
   db.pushSubs = Array.isArray(db.pushSubs) ? db.pushSubs : []; // 직원 휴대폰 푸시 구독 { endpoint, keys, staff, at }
   const push = createPush(dataDir);
   // 직원 휴대폰으로 알림. 잠금화면에 보이므로 이름은 가려서 넣을 것. except: 이 일을 한 본인 기기는 제외
@@ -146,6 +152,9 @@ module.exports = function createHerb({ dataDir, password, secret, send, readBody
   const dupOf = (patient, round, exceptId) => db.orders.find((x) =>
     x.id !== exceptId && OPEN.includes(x.status) && x.patient === patient && round != null && x.round === round);
 
+  const DOSAGE_DEFAULT = '하루 3회, 식후 30분에 1팩씩 드세요. 냉장 보관하고 따뜻하게 데워 드세요.';
+  const dosageText = (o) => o.dosage || DOSAGE_DEFAULT;
+  const rememberDosage = (o) => { if (o.formula && o.dosage) db.dosageByFormula[o.formula] = o.dosage; };
   const cleanTrack = (v) => String(v ?? '').replace(/[^0-9]/g, '').slice(0, 20);
   const trackDup = (t, exceptId) => t && db.orders.find((x) => x.id !== exceptId && x.tracking === t);
   const contactOf = (patient) => ({ phone: db.phones[patient] || '', consent: !!db.consent[patient], adConsent: !!db.adConsent[patient] });
@@ -164,13 +173,154 @@ module.exports = function createHerb({ dataDir, password, secret, send, readBody
     if (!why) {
       const r = await alimtalk.send('shipped', c.phone, {
         '#{이름}': o.patient, '#{처방}': o.formula || '한약', '#{회차}': o.round ? `${o.round}${o.total ? '/' + o.total : ''}회차` : '',
-        '#{택배사}': '로젠택배', '#{송장번호}': o.tracking || '', '#{조회링크}': o.tracking ? TRACK_URL + o.tracking : '',
+        '#{복용법}': dosageText(o), '#{택배사}': '로젠택배', '#{송장번호}': o.tracking || '', '#{조회링크}': o.tracking ? TRACK_URL + o.tracking : '',
       });
       rec.ok = r.ok; rec.error = r.ok ? '' : r.error;
     }
     o.messages = [...(o.messages || []), rec];
     save();
     return rec;
+  }
+
+  // ---- 조제 사진: DATA_DIR/photos 에 저장, 환자에게는 추측 불가능한 비공개 링크로만 보여줌 ----
+  const PHOTO_DIR = path.join(dataDir, 'photos');
+  const PHOTO_DAYS = 60; // 링크 유효기간
+  const baseUrl = (req) => publicUrl || (req ? `https://${req.headers.host}` : '');
+  function cleanupPhotos() {
+    const limit = Date.now() - PHOTO_DAYS * 86400000;
+    let changed = false;
+    for (const o of db.orders) {
+      if (!o.photos || !o.photos.length || Date.parse(o.photos[o.photos.length - 1].at) > limit) continue;
+      for (const ph of o.photos) fs.rm(path.join(PHOTO_DIR, ph.file), () => {});
+      o.photos = []; o.photoToken = ''; changed = true;
+    }
+    if (changed) save();
+  }
+  // 결제 첫날 시작 인사: 이 환자의 첫 카드(또는 1회차)일 때 한 번
+  async function notifyWelcome(o, by) {
+    const c = contactOf(o.patient);
+    const why = !alimtalk.enabled('welcome') ? '알림톡 미설정' : !c.phone ? '연락처 없음' : !c.consent ? '수신동의 없음' : '';
+    const rec = { at: now(), type: '시작인사', by, ok: false, error: why };
+    if (!why) {
+      const r = await alimtalk.send('welcome', c.phone, {
+        '#{이름}': o.patient, '#{처방}': o.formula || '한약',
+        '#{기간}': o.pkgDays ? `${o.pkgDays}일` : (o.total ? `${o.total * CYCLE}일` : '처방 기간'),
+        '#{복용법}': dosageText(o), '#{총회차}': o.total ? `${o.total}회` : '-', '#{종료일}': o.pkgEnd || (o.total ? addDays(kstDate(), o.total * CYCLE) : '-'),
+      });
+      rec.ok = r.ok; rec.error = r.ok ? '' : r.error;
+    }
+    o.messages = [...(o.messages || []), rec];
+    save();
+    return rec;
+  }
+
+  async function notifyPhoto(o, by, req) {
+    const c = contactOf(o.patient);
+    const why = !alimtalk.enabled('photo') ? '알림톡 미설정' : !c.phone ? '연락처 없음' : !c.consent ? '수신동의 없음' : !o.photoToken ? '사진 없음' : '';
+    const rec = { at: now(), type: '조제사진', by, ok: false, error: why };
+    if (!why) {
+      const r = await alimtalk.send('photo', c.phone, {
+        '#{이름}': o.patient, '#{처방}': o.formula || '한약', '#{회차}': o.round ? `${o.round}${o.total ? '/' + o.total : ''}회차` : '',
+        '#{사진링크}': `${baseUrl(req)}/p/${o.photoToken}`,
+      });
+      rec.ok = r.ok; rec.error = r.ok ? '' : r.error;
+    }
+    o.messages = [...(o.messages || []), rec];
+    save();
+    return rec;
+  }
+  // 환자용 사진 페이지: /p/<token>, /p/<token>/<n>.jpg
+  function publicPage(req, res, url) {
+    const m = url.pathname.match(/^\/p\/([a-f0-9]{32})(?:\/(\d+)\.jpg)?$/);
+    const o = m && db.orders.find((x) => x.photoToken === m[1]);
+    const head = { 'X-Content-Type-Options': 'nosniff', 'Referrer-Policy': 'no-referrer', 'X-Robots-Tag': 'noindex', 'Cache-Control': 'private, max-age=300' };
+    if (!o || !o.photos || !o.photos.length) { res.writeHead(404, { ...head, 'Content-Type': 'text/html; charset=utf-8' }); return res.end('<meta name=viewport content="width=device-width"><p style="font:18px sans-serif;padding:30px">사진이 없거나 보관 기간이 지났어요.</p>'); }
+    if (m[2] !== undefined) {
+      const ph = o.photos[Number(m[2])];
+      if (!ph) { res.writeHead(404, head); return res.end(); }
+      return fs.readFile(path.join(PHOTO_DIR, ph.file), (err, buf) => {
+        if (err) { res.writeHead(404, head); return res.end(); }
+        res.writeHead(200, { ...head, 'Content-Type': 'image/jpeg' }); res.end(buf);
+      });
+    }
+    const e = (v) => String(v ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+    res.writeHead(200, { ...head, 'Content-Type': 'text/html; charset=utf-8', 'Content-Security-Policy': "default-src 'self'; style-src 'unsafe-inline'" });
+    res.end(`<!doctype html><html lang="ko"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="robots" content="noindex"><title>한약 조제 사진</title>
+<style>body{margin:0;font-family:sans-serif;background:#f6f4ef;color:#23302b}.w{max-width:560px;margin:0 auto;padding:20px 16px 40px}h1{font-size:21px;color:#245647}img{width:100%;border-radius:14px;margin:10px 0;background:#fff}.m{color:#6b7872;font-size:15px;line-height:1.6}</style></head>
+<body><div class="w"><h1>🌿 ${e(clinicName || '한의원')} 한약 조제 사진</h1>
+<p class="m">${e(maskName(o.patient))}님의 ${e(o.formula || '한약')} ${o.round ? e(o.round + (o.total ? '/' + o.total : '') + '회차') : ''}<br>조제일 ${e(kstDate(o.photos[0].at))}</p>
+${o.photos.map((_, i) => `<img src="/p/${o.photoToken}/${i}.jpg" alt="조제 사진 ${i + 1}">`).join('')}
+<div style="background:#fff;border:1px solid #dde3df;border-radius:14px;padding:14px 16px;margin:12px 0"><b>💊 복용법</b><p style="margin:6px 0 0;font-size:17px;line-height:1.6;white-space:pre-wrap">${e(dosageText(o))}</p></div>
+<p class="m">받으신 뒤 바로 냉장 보관해 주세요. 궁금한 점은 카카오톡 채널로 남겨 주세요.<br>이 사진은 ${PHOTO_DAYS}일 동안만 볼 수 있어요.</p></div></body></html>`);
+  }
+
+  // ---- 15일 설문: 알림톡 링크로 열리는 짧은 설문 (/s/<token>) ----
+  const Q = {
+    taking: ['잘 먹고 있어요', '가끔 빼먹어요', '거의 못 먹었어요'],
+    feel: ['좋아졌어요', '비슷해요', '아직 모르겠어요', '불편해졌어요'],
+    side: ['없어요', '속이 불편해요', '변이 묽어요', '기타 (아래에 적어 주세요)'],
+  };
+  function makeSurvey(item) {
+    const token = crypto.randomBytes(16).toString('hex');
+    db.surveys[token] = { patient: item.patient, base: item.base, dueDate: item.dueDate, at: now(), answer: null, answeredAt: null };
+    const keys = Object.keys(db.surveys);
+    if (keys.length > 3000) for (const k of keys.slice(0, keys.length - 3000)) delete db.surveys[k];
+    return token;
+  }
+  const surveyOf = (patient, base) => Object.values(db.surveys).filter((x) => x.patient === patient && x.base === base)
+    .sort((a, b) => b.at.localeCompare(a.at))[0] || null;
+  const needsCall = (a) => !!a && (a.feel === Q.feel[3] || (a.side && a.side !== Q.side[0]) || a.call === 'yes' || a.taking === Q.taking[2]);
+  async function sendFollowKakao(item, by) {
+    const c = contactOf(item.patient);
+    const why = !alimtalk.enabled('followup') ? '알림톡 미설정' : !c.phone ? '연락처 없음' : !c.consent ? '수신동의 없음' : '';
+    if (why) return { ok: false, error: why };
+    const last = db.orders.filter((o) => o.patient === item.patient && o.status === 'sent').sort((a, b2) => (b2.sentAt || '').localeCompare(a.sentAt || ''))[0];
+    const token = makeSurvey(item);
+    const r = await alimtalk.send('followup', c.phone, {
+      '#{이름}': item.patient, '#{처방}': (last && last.formula) || '한약', '#{경과일}': String(item.days),
+      '#{설문링크}': `${baseUrl()}/s/${token}`,
+    });
+    if (!r.ok) delete db.surveys[token];
+    db.follow[item.patient] = { ...(db.follow[item.patient] || { base: item.base }), lastKakao: now(), lastKakaoBy: by, lastKakaoOk: r.ok, kakaoFor: item.dueDate };
+    save();
+    return r;
+  }
+  function readForm(req) {
+    return new Promise((ok, no) => {
+      let d = ''; req.on('data', (c) => { d += c; if (d.length > 20000) { no(new Error('too large')); req.destroy(); } });
+      req.on('end', () => ok(Object.fromEntries(new URLSearchParams(d)))); req.on('error', no);
+    });
+  }
+  async function surveyPage(req, res, url) {
+    const m = url.pathname.match(/^\/s\/([a-f0-9]{32})$/);
+    const sv = m && db.surveys[m[1]];
+    const e = (v) => String(v ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+    const page = (body) => {
+      res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8', 'X-Robots-Tag': 'noindex', 'Referrer-Policy': 'no-referrer', 'Cache-Control': 'no-store', 'X-Content-Type-Options': 'nosniff', 'Content-Security-Policy': "default-src 'none'; style-src 'unsafe-inline'; form-action 'self'" });
+      res.end(`<!doctype html><html lang="ko"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="robots" content="noindex"><title>복용 확인</title>
+<style>body{margin:0;font-family:sans-serif;background:#f6f4ef;color:#23302b}.w{max-width:560px;margin:0 auto;padding:20px 16px 40px}h1{font-size:21px;color:#245647}fieldset{border:1px solid #dde3df;border-radius:14px;background:#fff;margin:12px 0;padding:12px 14px}legend{font-weight:700;padding:0 4px}label{display:block;padding:9px 0;font-size:17px}input[type=radio]{transform:scale(1.3);margin-right:10px}textarea{width:100%;box-sizing:border-box;font:inherit;padding:10px;border:1px solid #dde3df;border-radius:10px}button{width:100%;font:inherit;font-size:18px;font-weight:700;padding:15px;border:0;border-radius:12px;background:#2f6f5e;color:#fff;margin-top:10px}.m{color:#6b7872}</style></head><body><div class="w">${body}</div></body></html>`);
+    };
+    const expired = !sv || Date.now() - Date.parse(sv.at) > 30 * 86400000;
+    if (expired) return page('<p class="m">설문 기간이 지났어요. 궁금한 점은 카카오톡 채널로 남겨 주세요.</p>');
+    const title = `<h1>🌿 ${e(clinicName || '한의원')} 한약 복용 확인</h1>`;
+    if (sv.answer) return page(`${title}<p>답해 주셔서 감사합니다. 🙏<br>확인 후 필요하면 연락드릴게요.</p>`);
+    if (req.method === 'POST') {
+      const ip = req.socket.remoteAddress || '';
+      if (limited(ip, 'survey', 20, 3600 * 1000)) return page('<p>잠시 후 다시 시도해 주세요.</p>');
+      const f = await readForm(req);
+      const pick = (k) => (Q[k].includes(f[k]) ? f[k] : '');
+      sv.answer = { taking: pick('taking'), feel: pick('feel'), side: pick('side'), memo: str(f.memo, 500), call: f.call === 'yes' ? 'yes' : 'no' };
+      sv.answeredAt = now(); save();
+      const alert = needsCall(sv.answer);
+      pushAll(alert ? '⚠ 설문: 연락 필요' : '📝 설문 응답', `${maskName(sv.patient)} — ${sv.answer.feel || '-'} · 부작용 ${sv.answer.side || '-'}${sv.answer.call === 'yes' ? ' · 연락 원함' : ''}`, '', 'survey-' + m[1]);
+      return page(`${title}<p>답해 주셔서 감사합니다. 🙏<br>${alert ? '불편하신 부분은 곧 연락드릴게요.' : '남은 한약도 꾸준히 드세요.'}</p>`);
+    }
+    const radios = (k, label) => `<fieldset><legend>${label}</legend>${Q[k].map((v, i) => `<label><input type="radio" name="${k}" value="${e(v)}" ${i === 0 && k === 'side' ? '' : ''} required>${e(v)}</label>`).join('')}</fieldset>`;
+    return page(`${title}<p class="m">${e(maskName(sv.patient))}님, 한약 드신 지 보름쯤 되었어요. 1분이면 끝나요.</p>
+<form method="post">${radios('taking', '1. 한약은 잘 드시고 있나요?')}${radios('feel', '2. 처음과 비교해 몸 상태는 어떠세요?')}${radios('side', '3. 드시면서 불편한 점이 있나요?')}
+<fieldset><legend>4. 하고 싶은 말 (선택)</legend><textarea name="memo" rows="3" maxlength="500"></textarea>
+<label><input type="checkbox" name="call" value="yes"> 한의원에서 전화 주세요</label></fieldset>
+<button>보내기</button></form><p class="m">진료 내용 상담은 이 설문 대신 한의원으로 직접 연락해 주세요.</p>`);
   }
 
   // 환자별 "가장 최근에 기록한 출발"을 기준으로 15일 알람 계산
@@ -193,6 +343,8 @@ module.exports = function createHerb({ dataDir, password, secret, send, readBody
         patient, base: c.base, days, round: c.round, total: c.total, manual: c.manual,
         dueDate, due, late: due ? dayDiff(today, dueDate) : 0, left: due ? 0 : dayDiff(dueDate, today),
         phone: db.phones[patient] || '', ackBy: (f && f.ackBy) || '',
+        survey: (() => { const sv = surveyOf(patient, c.base); return sv ? { at: sv.at, answer: sv.answer, answeredAt: sv.answeredAt, alert: needsCall(sv.answer) } : null; })(),
+        kakaoAt: db.follow[patient] && db.follow[patient].base === c.base ? db.follow[patient].lastKakao || '' : '',
       });
     }
     return list.sort((a, b) => a.dueDate.localeCompare(b.dueDate));
@@ -200,10 +352,32 @@ module.exports = function createHerb({ dataDir, password, secret, send, readBody
 
   // 직원 텔레그램방에 하루 한 번(오전 9시 이후) 확인할 환자 알림
   let sending = false;
+  // 회차별 '조제할 차례' 알림: 조제 예정일이 된 카드마다 한 번씩 (6회차면 6번)
+  function roundReminders(today) {
+    const ready = db.orders.filter((o) => ['need_rx', 'rx_ready'].includes(o.status) && o.dueDate && o.dueDate <= today && o.dueNotified !== o.dueDate);
+    for (const o of ready) {
+      o.dueNotified = o.dueDate;
+      pushAll(`🌿 ${o.round || ''}회차 조제할 차례`, `${who(o)} ${o.formula || ''}${o.status === 'need_rx' ? ' — 처방전 먼저 확인' : ''}`, '', 'due-' + o.id);
+    }
+    if (ready.length) save();
+  }
+
   async function digest() {
     if (sending) return;
     const today = kstDate(), hour = kstHour();
     if (hour < 9 || hour >= 20) return;
+    roundReminders(today);
+    cleanupPhotos();
+    // 15일 알람 날: 수신동의한 환자에게 안부 + 설문 카톡 자동 발송 (알람 회차마다 한 번)
+    if (alimtalk.enabled('followup')) {
+      for (const x of followups(today).filter((y) => y.due)) {
+        const f = db.follow[x.patient];
+        if (f && f.base === x.base && f.kakaoFor === x.dueDate) continue;
+        const c = contactOf(x.patient);
+        if (!c.phone || !c.consent) continue;
+        await sendFollowKakao(x, '자동');
+      }
+    }
     const due = followups(today).filter((x) => x.due);
     if (!due.length) return;
     // 휴대폰 푸시: 하루 한 번 아침 요약 (15일 확인 + 로젠 접수 대기)
@@ -243,7 +417,7 @@ module.exports = function createHerb({ dataDir, password, secret, send, readBody
     if (req.method === 'GET' && p === '/api/herb/state') {
       const contacts = Object.create(null);
       for (const o of db.orders) contacts[o.patient] = contactOf(o.patient);
-      return send(res, 200, { contacts, alimtalk: alimtalk.enabled('shipped'), photoRead: photoRead.enabled(), pushDevices: db.pushSubs.map((x) => x.staff), trackUrl: TRACK_URL, orders: db.orders, stock: db.stock, stockLog: db.stockLog.slice(-60).reverse(), staff: db.staff, statuses: STATUSES, next: NEXT, followups: followups(), today: kstDate(), cycle: CYCLE, clinicName });
+      return send(res, 200, { contacts, alimtalk: alimtalk.enabled('shipped'), kakaoPhoto: alimtalk.enabled('photo'), kakaoWelcome: alimtalk.enabled('welcome'), kakaoFollow: alimtalk.enabled('followup'), photoRead: photoRead.enabled(), pushDevices: db.pushSubs.map((x) => x.staff), trackUrl: TRACK_URL, orders: db.orders, stock: db.stock, stockLog: db.stockLog.slice(-60).reverse(), staff: db.staff, dosageByFormula: db.dosageByFormula, dosageDefault: DOSAGE_DEFAULT, statuses: STATUSES, next: NEXT, pkgPresets: PKG_PRESETS, cycle: CYCLE, followups: followups(), today: kstDate(), cycle: CYCLE, clinicName });
     }
 
     if (req.method === 'PUT' && p === '/api/herb/staff') {
@@ -289,6 +463,16 @@ module.exports = function createHerb({ dataDir, password, secret, send, readBody
       }
       save();
       return send(res, 200, { followups: followups() });
+    }
+
+    // 15일 알람: 카카오 알림톡으로 안부 보내기
+    if (req.method === 'POST' && p === '/api/herb/follow/kakao') {
+      if (needActor()) return;
+      const b = await readBody(req);
+      const item = followups().find((x) => x.patient === str(b.patient, 30));
+      if (!item) return send(res, 404, { error: '알람을 찾을 수 없어요.' });
+      const r = await sendFollowKakao(item, by);
+      return r.ok ? send(res, 200, { ok: true }) : send(res, r.error && /미설정|없음/.test(r.error) ? 400 : 502, { error: `카톡을 보낼 수 없어요: ${r.error}` });
     }
 
     // 푸시 알림 구독
@@ -361,7 +545,8 @@ module.exports = function createHerb({ dataDir, password, secret, send, readBody
       const patient = str(b.patient, 30);
       if (!patient) return send(res, 400, { error: '환자 이름을 넣어 주세요.' });
       const round = int(b.round, 1, 99);
-      const total = int(b.total, 1, 99);
+      const pkgDays = pkgDaysOf(b.pkgDays);
+      const total = pkgDays ? pkgRounds(pkgDays) : int(b.total, 1, 99);
       const status = b.hasRx ? 'rx_ready' : 'need_rx';
       const dup = dupOf(patient, round);
       if (dup && !b.force) {
@@ -372,16 +557,21 @@ module.exports = function createHerb({ dataDir, password, secret, send, readBody
         delivery: ['택배', '직수', '내원'].includes(b.delivery) ? b.delivery : '택배',
         kind: ['자보', '비급여', '기타'].includes(b.kind) ? b.kind : '비급여',
         note: str(b.note, 300), assignee: '', location: '', sentAt: null,
+        dueDate: isDate(b.dueDate) ? b.dueDate : kstDate(),
+        dosage: str(b.dosage, 300) || (str(b.formula, 60) && db.dosageByFormula[str(b.formula, 60)]) || '',
+        pkgDays, pkgStart: pkgDays ? kstDate() : '', pkgEnd: pkgDays ? addDays(kstDate(), pkgDays) : '',
         status, createdAt: now(), createdBy: by, updatedAt: now(), version: 1,
         history: [{ at: now(), by, from: null, to: status, note: '카드 생성' }],
       };
+      const firstOfPatient = !db.orders.some((x) => x.patient === patient && OPEN.includes(x.status)) && (round === 1 || !db.orders.some((x) => x.patient === patient));
       const ph = str(b.phone, 20).replace(/[^0-9]/g, '');
       const ad = b.adConsent === true ? true : undefined;
       if (ph && /^01\d{8,9}$/.test(ph)) setContact(patient, ph, b.consent === true ? true : undefined, by, ad);
       else if (db.phones[patient]) setContact(patient, undefined, b.consent === true ? true : undefined, by, ad);
-      db.orders.push(o); save();
+      db.orders.push(o); rememberDosage(o); save();
       if (status === 'rx_ready') pushAll('🌿 조제할 약', `${who(o)} ${o.formula || ''} — 새 카드`, by, 'rx-' + o.id);
-      return send(res, 201, o);
+      const welcome = firstOfPatient && b.welcome !== false ? await notifyWelcome(o, by) : null;
+      return send(res, 201, { ...o, welcome });
     }
 
     const m = p.match(/^\/api\/herb\/orders\/([a-f0-9]+)(\/move)?$/);
@@ -389,7 +579,7 @@ module.exports = function createHerb({ dataDir, password, secret, send, readBody
       const o = db.orders.find((x) => x.id === m[1]);
       if (!o) return send(res, 404, { error: '카드를 찾을 수 없어요. 새로고침 해주세요.' });
       if (needActor()) return;
-      const b = await readBody(req);
+      const b = await readBody(req, 12_000_000); // 조제 사진 포함
 
       // 화면을 오래 열어둔 사이 다른 사람이 바꿨으면 거절
       if (b.version != null && b.version !== o.version) {
@@ -435,7 +625,9 @@ module.exports = function createHerb({ dataDir, password, secret, send, readBody
             id: rid(), patient: o.patient, formula: o.formula, round: o.round + 1, total: o.total,
             delivery: o.delivery, kind: o.kind, note: '', assignee: '', location: '', sentAt: null,
             status: 'need_rx', createdAt: now(), createdBy: by, updatedAt: now(), version: 1,
-            history: [{ at: now(), by, from: null, to: 'need_rx', note: `${o.round}회차 발송 후 자동 생성` }],
+            dueDate: addDays(kstDate(o.sentAt), CYCLE), // 다음 회차 조제할 날 (직전 발송 + 15일)
+            pkgDays: o.pkgDays || 0, pkgStart: o.pkgStart || '', pkgEnd: o.pkgEnd || '', dosage: o.dosage || '',
+            history: [{ at: now(), by, from: null, to: 'need_rx', note: `${o.round}회차 발송 후 자동 생성 (조제 예정 ${addDays(kstDate(o.sentAt), CYCLE)})` }],
           };
           db.orders.push(nextCard);
         }
@@ -463,6 +655,16 @@ module.exports = function createHerb({ dataDir, password, secret, send, readBody
         if (['자보', '비급여', '기타'].includes(b.kind) && b.kind !== o.kind) { o.kind = b.kind; changes.push('구분'); }
         if (typeof b.note === 'string' && str(b.note, 300) !== o.note) { o.note = str(b.note, 300); changes.push('메모'); }
         if (typeof b.location === 'string' && str(b.location, 40) !== o.location) { o.location = str(b.location, 40); changes.push('보관위치'); }
+        if (typeof b.dosage === 'string' && str(b.dosage, 300) !== (o.dosage || '')) { o.dosage = str(b.dosage, 300); rememberDosage(o); changes.push('복용법'); }
+        if (b.pkgDays !== undefined && pkgDaysOf(b.pkgDays) !== (o.pkgDays || 0)) {
+          const d = pkgDaysOf(b.pkgDays);
+          o.pkgDays = d;
+          o.pkgStart = d ? (o.pkgStart || kstDate(o.createdAt)) : '';
+          o.pkgEnd = d ? addDays(o.pkgStart, d) : '';
+          if (d) o.total = pkgRounds(d);
+          changes.push(d ? `패키지 ${d}일` : '패키지 없음');
+        }
+        if (isDate(b.dueDate) && b.dueDate !== o.dueDate) { o.dueDate = b.dueDate; o.dueNotified = null; changes.push(`조제 예정 ${b.dueDate}`); }
         if (b.tracking !== undefined && cleanTrack(b.tracking) !== (o.tracking || '')) {
           const t = cleanTrack(b.tracking);
           if (t && t.length < 8) return send(res, 400, { error: '송장번호가 너무 짧아요.' });
@@ -475,6 +677,28 @@ module.exports = function createHerb({ dataDir, password, secret, send, readBody
           o.updatedAt = now(); o.version++; save();
         }
         return send(res, 200, o);
+      }
+
+      if (!m[2] && req.method === 'POST' && b.photos !== undefined) {
+        const imgs = Array.isArray(b.photos) ? b.photos.slice(0, 4) : [];
+        const bufs = imgs.map((x) => Buffer.from(String(x).replace(/^data:image\/\w+;base64,/, ''), 'base64'))
+          .filter((x) => x.length > 1000 && x.length < 3_000_000 && x[0] === 0xff && x[1] === 0xd8); // JPEG만
+        if (!bufs.length && !b.sendOnly) return send(res, 400, { error: '사진이 없어요.' });
+        if (bufs.length) {
+          fs.mkdirSync(PHOTO_DIR, { recursive: true });
+          o.photoToken = o.photoToken || crypto.randomBytes(16).toString('hex');
+          o.photos = o.photos || [];
+          for (const buf of bufs) {
+            if (o.photos.length >= 8) break;
+            const file = `${o.id}-${crypto.randomBytes(4).toString('hex')}.jpg`;
+            fs.writeFileSync(path.join(PHOTO_DIR, file), buf);
+            o.photos.push({ file, at: now(), by });
+          }
+          o.history.push({ at: now(), by, from: o.status, to: o.status, note: `조제 사진 ${bufs.length}장` });
+          o.updatedAt = now(); o.version++; save();
+        }
+        const msg = b.notify === false ? null : await notifyPhoto(o, by, req);
+        return send(res, 200, { photos: o.photos.length, link: `${baseUrl(req)}/p/${o.photoToken}`, msg });
       }
 
       if (!m[2] && req.method === 'POST' && b.resend === true) {
@@ -557,5 +781,5 @@ module.exports = function createHerb({ dataDir, password, secret, send, readBody
     return send(res, 404, { error: 'not found' });
   }
 
-  return { handle, digest };
+  return { handle, digest, publicPage, surveyPage };
 };

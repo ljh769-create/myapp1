@@ -34,6 +34,43 @@
     localStorage.setItem(USE_KEY(kind), JSON.stringify(keep));
     return use;
   }
+  const contact = (n) => (S.contacts && S.contacts[n]) || { phone: '', consent: false };
+  const needTrack = (o) => o.delivery === '택배' && !o.tracking && ['compounding', 'done'].includes(o.status);
+  const maskPhone = (p) => (p ? p.replace(/^(\d{3})\d+(\d{4})$/, '$1-****-$2') : '');
+  const msgWhy = (n) => { const c = contact(n); return !S.alimtalk ? '알림톡 미설정' : !c.phone ? '연락처 없음' : !c.consent ? '수신동의 없음' : ''; };
+  // 송장번호 입력 (휴대폰 크롬은 카메라로 바코드 스캔 가능)
+  function openTrack(id, after) {
+    const o = S.orders.find((x) => x.id === id);
+    if (!o) return;
+    sheet(`<h3>${esc(o.patient)} ${esc(roundTxt(o))} 로젠 송장번호</h3>
+      <p class="sub">로젠 앱에서 접수한 뒤 송장번호를 넣어 주세요. 송장이 있어야 발송할 수 있어요.</p>
+      <label class="f"><span>송장번호</span><input id="trk" inputmode="numeric" autocomplete="off" value="${esc(o.tracking || '')}" placeholder="숫자만"></label>
+      ${'BarcodeDetector' in window ? '<p><button type="button" class="ab" id="scan">📷 바코드 스캔</button></p><video id="cam" playsinline style="display:none;width:100%;border-radius:12px"></video>' : ''}
+      <div class="okrow"><button class="ab" data-close>취소</button><button class="ab p" id="ok">저장</button></div>`, (el) => {
+      let stream;
+      const stop = () => stream && stream.getTracks().forEach((t) => t.stop());
+      el.addEventListener('click', (e) => { if (e.target === el || e.target.closest('[data-close]')) stop(); });
+      const scan = el.querySelector('#scan');
+      if (scan) scan.onclick = async () => {
+        try {
+          const det = new BarcodeDetector({ formats: ['code_128', 'code_39', 'itf', 'ean_13', 'qr_code'] });
+          stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: 'environment' } });
+          const v = el.querySelector('#cam'); v.srcObject = stream; v.style.display = 'block'; await v.play();
+          const tick = async () => {
+            if (!el.isConnected || !stream.active) return;
+            const r = await det.detect(v).catch(() => []);
+            const hit = r.map((x) => x.rawValue.replace(/[^0-9]/g, '')).find((x) => x.length >= 8);
+            if (hit) { el.querySelector('#trk').value = hit; stop(); v.style.display = 'none'; toast('스캔했어요: ' + hit); } else requestAnimationFrame(tick);
+          };
+          tick();
+        } catch { toast('카메라를 쓸 수 없어요. 직접 입력해 주세요.', true); }
+      };
+      el.querySelector('#ok').onclick = async () => {
+        try { await api('PATCH', `/api/herb/orders/${id}`, { version: o.version, tracking: el.querySelector('#trk').value }); stop(); el.remove(); toast('송장번호 저장'); await load(); after && after(); }
+        catch (e) { toast(e.message, true); }
+      };
+    });
+  }
   const roundTxt = (o) => (o.round ? `${o.round}${o.total ? '/' + o.total : '회차'}` : '');
 
   function toast(msg, err) {
@@ -197,6 +234,7 @@
     const lw = low();
     return `
       ${lw.length ? `<div class="warnbox" data-tab="stock" style="cursor:pointer">⚠ <b>재고 부족 — 주문/제작 필요</b><br>${lw.map((x) => `${esc(x.name)} ${x.qty}${esc(x.unit)}${x.min ? ` (최소 ${x.min})` : ''}`).join(' · ')}</div>` : ''}
+      ${(() => { const t = S.orders.filter(needTrack); return t.length ? `<div class="warnbox">📦 <b>로젠 접수할 택배 ${t.length}건</b>: ${t.map((o) => `<a href="#" data-track="${o.id}">${esc(o.patient)} ${esc(roundTxt(o))}</a>`).join(' · ')}</div>` : ''; })()}
       <div class="rule"><b>규칙</b> ① 조제 전에 <b>조제 시작</b>을 눌러 내 이름을 건다 ② 처방전 없으면 조제 버튼이 안 나온다 ③ <b>조제완료</b>(보관 위치 기록)가 된 약만 발송할 수 있다</div>
       <input class="search" type="search" placeholder="환자 이름·처방·메모 검색">
       <div class="cols">
@@ -220,8 +258,13 @@
       case 'rx_ready': acts = b('compounding', '조제 시작 (내가 함)', 'p') + b('need_rx', '처방전 없음'); break;
       case 'compounding':
         acts = mine ? b('done', '조제완료', 'p') + b('rx_ready', '조제 취소') : b('done', `${esc(o.assignee)}님 대신 완료처리`);
+        if (o.delivery === '택배') acts += `<button class="ab" data-track="${o.id}">${o.tracking ? '송장 수정' : '📦 송장 입력'}</button>`;
         break;
-      case 'done': acts = b('sent', o.delivery === '택배' ? '택배 발송함' : '환자 수령함', 'p') + b('hold', '보류'); break;
+      case 'done':
+        acts = needTrack(o)
+          ? `<button class="ab p" data-track="${o.id}">📦 로젠 송장 입력</button>` + b('hold', '보류')
+          : b('sent', o.delivery === '택배' ? '택배 발송함' : '환자 수령함', 'p') + (o.delivery === '택배' ? `<button class="ab" data-track="${o.id}">송장 수정</button>` : '') + b('hold', '보류');
+        break;
       case 'sent': acts = b('recall', '회수 필요', 'w'); break;
       case 'hold': acts = b('need_rx', '처방전 필요로') + b('rx_ready', '처방전 받음으로') + b('done', '조제완료로'); break;
       case 'recall': acts = b('done', '회수함 → 보관', 'p') + b('need_rx', '처방전 필요로') + b('hold', '보류'); break;
@@ -229,10 +272,13 @@
     return `<div class="hcard ${o.status}">
       <div><a href="#" class="nm" data-open="${o.id}">${esc(o.patient)}</a><span class="rd">${esc(roundTxt(o))}</span>
         <span class="badge">${esc(o.kind)}</span><span class="badge">${esc(o.delivery)}</span>
-        ${same.length ? '<span class="badge r">⚠ 같은 회차 중복</span>' : ''}</div>
+        ${same.length ? '<span class="badge r">⚠ 같은 회차 중복</span>' : ''}
+        ${needTrack(o) ? '<span class="badge r">📦 로젠 접수 필요</span>' : ''}
+        ${o.tracking ? `<span class="badge">✅ 송장 ${esc(o.tracking.slice(-4))}</span>` : ''}
+        ${o.delivery === '택배' && o.status !== 'sent' && msgWhy(o.patient) === '연락처 없음' ? '<span class="badge">📵 연락처 없음</span>' : ''}</div>
       <div class="meta">${esc(o.formula || '처방 미기재')}${o.location ? ' · 📦 ' + esc(o.location) : ''} · ${fmt(o.updatedAt)}</div>
       ${o.assignee ? `<div class="who">조제: <b>${esc(o.assignee)}</b></div>` : ''}
-      ${o.status === 'sent' ? `<div class="who">${esc(o.delivery)} ${fmt(o.sentAt)} · ${esc(o.history[o.history.length - 1]?.by || '')}</div>` : ''}
+      ${o.status === 'sent' ? `<div class="who">${esc(o.delivery)} ${fmt(o.sentAt)} · ${esc(o.history[o.history.length - 1]?.by || '')}${(() => { const m = (o.messages || []).slice(-1)[0]; return m ? (m.ok ? ' · 💬 알림톡 보냄' : ` · <span style="color:#b3261e">💬 안 보냄(${esc(m.error)})</span>`) : ''; })()}</div>` : ''}
       ${o.note ? `<div class="note">${esc(o.note)}</div>` : ''}
       <div class="acts">${acts}</div>
     </div>`;
@@ -267,7 +313,7 @@
       '------------------------------',
       '보낸약',
       '',
-      sec('택배', sentToday.filter((o) => o.delivery === '택배').map((o) => line(o))),
+      sec('택배', sentToday.filter((o) => o.delivery === '택배').map((o) => line(o, o.tracking ? ` (로젠 ${o.tracking})` : ''))),
       '',
       sec('직수/내원', sentToday.filter((o) => o.delivery !== '택배').map((o) => line(o))),
       ...(by('recall').length ? ['', sec('⚠ 회수 필요', by('recall').map((o) => line(o, o.note ? ` → ${o.note}` : '')))] : []),
@@ -355,6 +401,8 @@
         <div class="f"><span>처방전</span>${segHTML('rx', [['0', '아직 없음'], ['1', '받았음']], pre.fromChart ? '1' : '0')}</div>
         <div class="f"><span>구분</span>${segHTML('kind', [['비급여', '비급여'], ['자보', '자보'], ['기타', '기타']], '비급여')}</div>
         <div class="f"><span>받는 방법</span>${segHTML('delivery', [['택배', '택배'], ['직수', '직수'], ['내원', '내원']], '택배')}</div>
+        <label class="f"><span>휴대폰 번호 (알림톡용 · 선택)</span><input name="phone" type="tel" placeholder="01012345678"></label>
+        <label class="f" style="display:flex;gap:8px;align-items:center"><input type="checkbox" name="consent" style="width:auto"> 알림톡 수신 동의 받음</label>
         <label class="f"><span>메모</span><textarea name="note" rows="2" placeholder="예: 전화로 지을 예정, 처방전 있는지 확인">${esc(pre.note || '')}</textarea></label>
         <div class="err" id="ne"></div>
         <div class="okrow"><button type="button" class="ab" data-close>취소</button><button class="ab p">만들기</button></div>
@@ -377,6 +425,7 @@
         if (!f.formula.value && past.formula) f.formula.value = past.formula;
         const setSeg = (n, v) => el.querySelectorAll(`[data-seg="${n}"] button`).forEach((b) => b.classList.toggle('on', b.dataset.v === v));
         setSeg('delivery', past.delivery); setSeg('kind', past.kind);
+        const c = contact(nm); if (c.phone && !f.phone.value) f.phone.value = c.phone; if (c.consent) f.consent.checked = true;
       };
       el.querySelectorAll('[data-cand]').forEach((g) => g.addEventListener('click', (e) => {
         const b = e.target.closest('button'); if (!b) return;
@@ -392,6 +441,7 @@
         const body = {
           patient: f.patient.value, formula: f.formula.value, round: f.round.value || null, total: f.total.value || null,
           hasRx: segVal(el, 'rx') === '1', kind: segVal(el, 'kind'), delivery: segVal(el, 'delivery'), note: f.note.value,
+          phone: f.phone.value, consent: f.consent.checked,
         };
         try { await api('POST', '/api/herb/orders', body); el.remove(); toast('카드를 만들었어요'); load(); }
         catch (err) {
@@ -444,6 +494,7 @@
         };
       });
     }
+    if (to === 'sent' && needTrack(o)) return openTrack(id, () => move(id, to));
     if (to === 'sent') {
       // 잘못 보내는 사고 방지: 보내기 직전 한 번 더 확인
       return sheet(`<h3>보내기 전 확인</h3>
@@ -451,17 +502,21 @@
           환자: <b style="font-size:18px">${esc(o.patient)}</b><br>
           처방: <b>${esc(o.formula || '미기재')}</b> · 회차: <b>${esc(roundTxt(o) || '-')}</b><br>
           보관 위치: <b>${esc(o.location || '-')}</b> · 조제: ${esc(o.assignee || '-')}<br>
-          방법: <b>${esc(o.delivery)}</b></div>
+          방법: <b>${esc(o.delivery)}</b>${o.tracking ? ` · 송장 <b>${esc(o.tracking)}</b>` : ''}</div>
+        ${o.delivery === '택배' ? (msgWhy(o.patient)
+          ? `<div class="warnbox">💬 환자 알림톡 <b>안 보냄</b>: ${esc(msgWhy(o.patient))}. <a href="#" data-open="${o.id}">연락처·동의 넣기</a></div>`
+          : `<div class="warnbox" style="background:var(--gl);color:var(--gd)">💬 발송 완료를 누르면 <b>${esc(maskPhone(contact(o.patient).phone))}</b>로 배송 안내 알림톡이 갑니다.</div>`) : ''}
         <label class="f" style="display:flex;gap:8px;align-items:center"><input type="checkbox" id="chk" style="width:auto"> 약 봉투의 이름·처방이 위와 같은 것을 눈으로 확인했어요</label>
         ${o.delivery === '택배' ? useHTML('sent', (x) => (x.name === '택배 박스' ? 1 : '')) : ''}
-        <label class="f"><span>메모 (송장번호 등)</span><input id="mn"></label>
+        <label class="f"><span>메모</span><input id="mn"></label>
         <div class="okrow"><button class="ab" data-close>취소</button><button class="ab p" id="ok" disabled>${o.delivery === '택배' ? '발송 완료' : '수령 완료'}</button></div>`, (el) => {
         const ok = el.querySelector('#ok');
         el.querySelector('#chk').onchange = (e) => { ok.disabled = !e.target.checked; };
         ok.onclick = async () => {
           try {
             const r = await api('POST', `/api/herb/orders/${id}/move`, { ...body, note: el.querySelector('#mn').value, use: o.delivery === '택배' ? readUse(el, 'sent') : [] });
-            el.remove(); toast(r.nextCard ? `발송 완료 · ${o.patient}님 ${r.nextCard.round}회차 카드 자동 생성` : '발송 기록 완료'); load();
+            const mt = r.msg ? (r.msg.ok ? ' · 알림톡 보냄' : ` · 알림톡 안 보냄(${r.msg.error})`) : '';
+            el.remove(); toast((r.nextCard ? `발송 완료 · ${r.nextCard.round}회차 카드 자동 생성` : '발송 기록 완료') + mt, r.msg && !r.msg.ok && r.msg.error !== '알림톡 미설정'); load();
           }
           catch (e) { toast(e.message, true); if (e.status === 409) { el.remove(); load(); } }
         };
@@ -493,9 +548,18 @@
         <div class="f"><span>구분</span>${segHTML('kind', [['비급여', '비급여'], ['자보', '자보'], ['기타', '기타']], o.kind)}</div>
         <div class="f"><span>받는 방법</span>${segHTML('delivery', [['택배', '택배'], ['직수', '직수'], ['내원', '내원']], o.delivery)}</div>
         <label class="f"><span>보관 위치</span><input name="location" value="${esc(o.location)}"></label>
+        ${o.delivery === '택배' ? `<label class="f"><span>로젠 송장번호</span><input name="tracking" inputmode="numeric" value="${esc(o.tracking || '')}"></label>` : ''}
         <label class="f"><span>메모</span><textarea name="note" rows="2">${esc(o.note)}</textarea></label>
         <div class="okrow"><button type="button" class="ab" data-close>닫기</button><button class="ab p">수정 저장</button></div>
       </form>
+      <h4 style="margin:18px 0 6px">환자 연락 (알림톡)</h4>
+      <form id="cf">
+        <label class="f"><span>휴대폰 번호</span><input name="phone" type="tel" value="${esc(contact(o.patient).phone)}" placeholder="01012345678"></label>
+        <label class="f" style="display:flex;gap:8px;align-items:center"><input type="checkbox" name="consent" style="width:auto" ${contact(o.patient).consent ? 'checked' : ''}> 환자가 카카오 알림톡(진료·배송 안내) 수신에 <b>동의</b>했어요</label>
+        <button class="ab">연락처 저장</button>
+        ${o.status === 'sent' && o.tracking ? '<button type="button" class="ab" id="resend">💬 배송 안내 다시 보내기</button>' : ''}
+      </form>
+      ${(o.messages || []).length ? `<div class="hist">${[...o.messages].reverse().map((m) => `<div><time>${fmt(m.at)}</time>${esc(m.type)} ${m.ok ? '✅ 보냄' : '❌ ' + esc(m.error)}</div>`).join('')}</div>` : ''}
       <h4 style="margin:18px 0 6px">기록</h4>
       <div class="hist">${[...o.history].reverse().map((h) => `<div><time>${fmt(h.at)}</time><b>${esc(h.by)}</b> ${h.from && h.from !== h.to ? esc(S.statuses[h.from]) + ' → ' : ''}${esc(S.statuses[h.to])}${h.note ? ' · ' + esc(h.note) : ''}</div>`).join('')}</div>
       ${['need_rx', 'rx_ready'].includes(o.status) ? '<p><button class="ab w" id="del">잘못 만든 카드 삭제</button></p>' : ''}`, (el) => {
@@ -507,9 +571,21 @@
           await api('PATCH', `/api/herb/orders/${id}`, {
             version: o.version, patient: f.patient.value, formula: f.formula.value, round: f.round.value || null, total: f.total.value || null,
             kind: segVal(el, 'kind'), delivery: segVal(el, 'delivery'), location: f.location.value, note: f.note.value,
+            ...(f.tracking ? { tracking: f.tracking.value } : {}),
           });
           el.remove(); toast('저장했어요'); load();
         } catch (err) { toast(err.message, true); }
+      };
+      const cf = el.querySelector('#cf');
+      cf.onsubmit = async (e) => {
+        e.preventDefault();
+        try { await api('POST', '/api/herb/contact', { patient: o.patient, phone: cf.phone.value, consent: cf.consent.checked }); toast('연락처 저장'); load(); }
+        catch (err) { toast(err.message, true); }
+      };
+      const rs = el.querySelector('#resend');
+      if (rs) rs.onclick = async () => {
+        try { const r = await api('POST', `/api/herb/orders/${id}`, { resend: true }); toast(r.msg.ok ? '알림톡 보냄' : '안 보냄: ' + r.msg.error, !r.msg.ok); el.remove(); load(); }
+        catch (err) { toast(err.message, true); }
       };
       const del = el.querySelector('#del');
       if (del) del.onclick = async () => {
@@ -521,11 +597,12 @@
 
   // ---------- 이벤트 ----------
   document.addEventListener('click', async (e) => {
-    const t = e.target.closest('[data-tab],[data-a],[data-move],[data-open],[data-me],[data-stock],[data-stockset],[data-stockin],[data-stockmin],[data-follow]');
+    const t = e.target.closest('[data-tab],[data-a],[data-move],[data-open],[data-me],[data-stock],[data-stockset],[data-stockin],[data-stockmin],[data-follow],[data-track]');
     if (!t) return;
     if (t.tagName === 'A') e.preventDefault();
     if (t.dataset.tab) { tab = t.dataset.tab; render(); return; }
     if (t.dataset.me) { localStorage.setItem(LS.me, t.dataset.me); render(); openPending(); return; }
+    if (t.dataset.track) { document.querySelectorAll('.sheet').forEach((x) => x.remove()); return openTrack(t.dataset.track); }
     if (t.dataset.follow) return follow(t.dataset.follow, t.dataset.p);
     if (t.dataset.move) return move(t.dataset.move, t.dataset.to);
     if (t.dataset.open) return openDetail(t.dataset.open);

@@ -5,6 +5,9 @@
 //  3) 조제완료(보관 위치 필수)가 아니면 발송/수령 처리 불가
 //  4) 같은 환자·같은 회차 카드가 진행 중이면 새로 만들 수 없음
 const fs = require('fs');
+const alimtalk = require('./alimtalk');
+// 로젠 배송조회 주소 (송장번호가 뒤에 붙음). 바뀌면 환경변수로 교체
+const TRACK_URL = process.env.LOGEN_TRACK_URL || 'https://www.ilogen.com/web/personal/trace/';
 const path = require('path');
 const crypto = require('crypto');
 
@@ -65,6 +68,7 @@ module.exports = function createHerb({ dataDir, password, secret, send, readBody
   db.departures = dict(db.departures); // 직접 등록한 출발일
   db.follow = dict(db.follow);         // 알람 확인/종료 상태
   db.phones = dict(db.phones);
+  db.consent = dict(db.consent);       // 알림톡 수신 동의 { at, by }
   for (const s of db.stock) { s.cat = s.cat || '탕약'; s.min = Number(s.min) || 0; }
   for (const [name, unit, qty] of DEFAULT_PACK) {
     if (!db.stock.some((x) => x.name === name)) db.stock.push({ id: rid(), name, qty, unit, cat: '포장재', min: 0, updatedAt: null, by: '' });
@@ -123,6 +127,31 @@ module.exports = function createHerb({ dataDir, password, secret, send, readBody
   }
   const dupOf = (patient, round, exceptId) => db.orders.find((x) =>
     x.id !== exceptId && OPEN.includes(x.status) && x.patient === patient && round != null && x.round === round);
+
+  const cleanTrack = (v) => String(v ?? '').replace(/[^0-9]/g, '').slice(0, 20);
+  const trackDup = (t, exceptId) => t && db.orders.find((x) => x.id !== exceptId && x.tracking === t);
+  const contactOf = (patient) => ({ phone: db.phones[patient] || '', consent: !!db.consent[patient] });
+  function setContact(patient, phone, consent, by) {
+    if (phone !== undefined) { if (phone) db.phones[patient] = phone; else delete db.phones[patient]; }
+    if (consent === true && !db.consent[patient]) db.consent[patient] = { at: now(), by };
+    if (consent === false) delete db.consent[patient];
+  }
+  // 발송 알림톡: 연락처 + 수신동의 + 설정이 모두 있을 때만. 결과는 카드 기록에 남김
+  async function notifyShipped(o, by) {
+    const c = contactOf(o.patient);
+    const why = !alimtalk.enabled('shipped') ? '알림톡 미설정' : !c.phone ? '연락처 없음' : !c.consent ? '수신동의 없음' : '';
+    const rec = { at: now(), type: '발송안내', by, ok: false, error: why };
+    if (!why) {
+      const r = await alimtalk.send('shipped', c.phone, {
+        '#{이름}': o.patient, '#{처방}': o.formula || '한약', '#{회차}': o.round ? `${o.round}${o.total ? '/' + o.total : ''}회차` : '',
+        '#{택배사}': '로젠택배', '#{송장번호}': o.tracking || '', '#{조회링크}': o.tracking ? TRACK_URL + o.tracking : '',
+      });
+      rec.ok = r.ok; rec.error = r.ok ? '' : r.error;
+    }
+    o.messages = [...(o.messages || []), rec];
+    save();
+    return rec;
+  }
 
   // 환자별 "가장 최근에 기록한 출발"을 기준으로 15일 알람 계산
   function followups(today = kstDate()) {
@@ -185,7 +214,9 @@ module.exports = function createHerb({ dataDir, password, secret, send, readBody
     const needActor = () => { if (!by) { send(res, 400, { error: '먼저 본인 이름을 선택해 주세요.' }); return true; } return false; };
 
     if (req.method === 'GET' && p === '/api/herb/state') {
-      return send(res, 200, { orders: db.orders, stock: db.stock, stockLog: db.stockLog.slice(-60).reverse(), staff: db.staff, statuses: STATUSES, next: NEXT, followups: followups(), today: kstDate(), cycle: CYCLE, clinicName });
+      const contacts = Object.create(null);
+      for (const o of db.orders) contacts[o.patient] = contactOf(o.patient);
+      return send(res, 200, { contacts, alimtalk: alimtalk.enabled('shipped'), trackUrl: TRACK_URL, orders: db.orders, stock: db.stock, stockLog: db.stockLog.slice(-60).reverse(), staff: db.staff, statuses: STATUSES, next: NEXT, followups: followups(), today: kstDate(), cycle: CYCLE, clinicName });
     }
 
     if (req.method === 'PUT' && p === '/api/herb/staff') {
@@ -233,6 +264,19 @@ module.exports = function createHerb({ dataDir, password, secret, send, readBody
       return send(res, 200, { followups: followups() });
     }
 
+    // 환자 연락처·수신동의
+    if (req.method === 'POST' && p === '/api/herb/contact') {
+      if (needActor()) return;
+      const b = await readBody(req);
+      const patient = str(b.patient, 30);
+      if (!patient) return send(res, 400, { error: '환자 이름을 넣어 주세요.' });
+      const phone = b.phone === undefined ? undefined : str(b.phone, 20).replace(/[^0-9]/g, '');
+      if (phone && !/^01\d{8,9}$/.test(phone)) return send(res, 400, { error: '휴대폰 번호를 확인해 주세요 (010으로 시작).' });
+      setContact(patient, phone, typeof b.consent === 'boolean' ? b.consent : undefined, by);
+      save();
+      return send(res, 200, contactOf(patient));
+    }
+
     // 새 카드
     if (req.method === 'POST' && p === '/api/herb/orders') {
       if (needActor()) return;
@@ -254,6 +298,9 @@ module.exports = function createHerb({ dataDir, password, secret, send, readBody
         status, createdAt: now(), createdBy: by, updatedAt: now(), version: 1,
         history: [{ at: now(), by, from: null, to: status, note: '카드 생성' }],
       };
+      const ph = str(b.phone, 20).replace(/[^0-9]/g, '');
+      if (ph && /^01\d{8,9}$/.test(ph)) setContact(patient, ph, b.consent === true ? true : undefined, by);
+      else if (b.consent === true && db.phones[patient]) setContact(patient, undefined, true, by);
       db.orders.push(o); save();
       return send(res, 201, o);
     }
@@ -291,6 +338,13 @@ module.exports = function createHerb({ dataDir, password, secret, send, readBody
           if (o.status === 'compounding' && !o.assignee) o.assignee = by;
         }
         if (to === 'rx_ready' && o.status === 'compounding') o.assignee = '';
+        if (to === 'sent' && o.delivery === '택배') {
+          const t = b.tracking !== undefined ? cleanTrack(b.tracking) : o.tracking;
+          if (!t || t.length < 8) return send(res, 400, { error: '로젠 송장번호를 먼저 넣어 주세요. 접수 안 된 택배는 보낼 수 없어요.' });
+          const d = trackDup(t, o.id);
+          if (d) return send(res, 409, { error: `이 송장번호는 ${d.patient}님 카드에 이미 있어요. 박스가 바뀌지 않았는지 확인!` });
+          o.tracking = t;
+        }
         if (to === 'sent') o.sentAt = now();
         const used = (to === 'done' || to === 'sent') ? applyUse(o, b.use, by, to === 'done' ? '조제' : '발송') : [];
         const usedTxt = used.length ? ' [사용: ' + used.map((u) => `${u.name} ${u.qty}`).join(', ') + ']' : '';
@@ -307,7 +361,8 @@ module.exports = function createHerb({ dataDir, password, secret, send, readBody
           db.orders.push(nextCard);
         }
         save();
-        return send(res, 200, { ...o, nextCard: nextCard ? { id: nextCard.id, round: nextCard.round } : null });
+        const msg = to === 'sent' && o.delivery === '택배' ? await notifyShipped(o, by) : null;
+        return send(res, 200, { ...o, nextCard: nextCard ? { id: nextCard.id, round: nextCard.round } : null, msg });
       }
 
       if (!m[2] && req.method === 'PATCH') {
@@ -325,11 +380,24 @@ module.exports = function createHerb({ dataDir, password, secret, send, readBody
         if (['자보', '비급여', '기타'].includes(b.kind) && b.kind !== o.kind) { o.kind = b.kind; changes.push('구분'); }
         if (typeof b.note === 'string' && str(b.note, 300) !== o.note) { o.note = str(b.note, 300); changes.push('메모'); }
         if (typeof b.location === 'string' && str(b.location, 40) !== o.location) { o.location = str(b.location, 40); changes.push('보관위치'); }
+        if (b.tracking !== undefined && cleanTrack(b.tracking) !== (o.tracking || '')) {
+          const t = cleanTrack(b.tracking);
+          if (t && t.length < 8) return send(res, 400, { error: '송장번호가 너무 짧아요.' });
+          const d = trackDup(t, o.id);
+          if (d) return send(res, 409, { error: `이 송장번호는 ${d.patient}님 카드에 이미 있어요. 박스가 바뀌지 않았는지 확인!` });
+          o.tracking = t; changes.push(t ? `송장 ${t}` : '송장 삭제');
+        }
         if (changes.length) {
           o.history.push({ at: now(), by, from: o.status, to: o.status, note: '수정: ' + changes.join(', ') });
           o.updatedAt = now(); o.version++; save();
         }
         return send(res, 200, o);
+      }
+
+      if (!m[2] && req.method === 'POST' && b.resend === true) {
+        if (o.status !== 'sent' || o.delivery !== '택배') return send(res, 400, { error: '발송된 택배 카드만 다시 보낼 수 있어요.' });
+        const r = await notifyShipped(o, by);
+        return send(res, 200, { msg: r });
       }
 
       if (!m[2] && req.method === 'DELETE') {
@@ -389,10 +457,10 @@ module.exports = function createHerb({ dataDir, password, secret, send, readBody
     // 엑셀/구글시트로 옮길 수 있는 CSV
     if (req.method === 'GET' && p === '/api/herb/export.csv') {
       const esc = (v) => `"${String(v ?? '').replace(/"/g, '""')}"`;
-      const rows = [['환자', '처방', '회차', '총회차', '구분', '수령방법', '상태', '조제담당', '보관위치', '메모', '최근변경', '최근변경자']];
+      const rows = [['환자', '처방', '회차', '총회차', '구분', '수령방법', '상태', '조제담당', '보관위치', '송장번호', '메모', '최근변경', '최근변경자']];
       for (const o of db.orders) {
         const last = o.history[o.history.length - 1] || {};
-        rows.push([o.patient, o.formula, o.round, o.total, o.kind, o.delivery, STATUSES[o.status], o.assignee, o.location, o.note, o.updatedAt, last.by]);
+        rows.push([o.patient, o.formula, o.round, o.total, o.kind, o.delivery, STATUSES[o.status], o.assignee, o.location, o.tracking || '', o.note, o.updatedAt, last.by]);
       }
       const csv = '﻿' + rows.map((r) => r.map(esc).join(',')).join('\r\n');
       res.writeHead(200, {

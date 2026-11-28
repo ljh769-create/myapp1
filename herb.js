@@ -44,6 +44,8 @@ const DEFAULT_STOCK = [
 
 // 출발일부터 CYCLE 일마다 확인 알람
 const CYCLE = 15;
+// 다음 회차는 약이 떨어지기 며칠 전에 조제 알림 (만들고 보내는 시간). 기본 5일 전 = 직전 발송 + 10일
+const PREP_DAYS = Math.min(CYCLE - 1, Math.max(0, Number(process.env.HERB_PREP_DAYS ?? 5) || 0));
 // 결제 패키지: 총 일수 (총 회차 = 일수 ÷ CYCLE, 올림)
 const PKG_PRESETS = [30, 60, 90, 180];
 const pkgDaysOf = (v) => { const n = Math.round(Number(v)); return Number.isFinite(n) && n >= CYCLE && n <= 730 ? n : 0; };
@@ -185,6 +187,7 @@ module.exports = function createHerb({ dataDir, password, secret, send, readBody
   // ---- 조제 사진: DATA_DIR/photos 에 저장, 환자에게는 추측 불가능한 비공개 링크로만 보여줌 ----
   const PHOTO_DIR = path.join(dataDir, 'photos');
   const PHOTO_DAYS = 60; // 링크 유효기간
+  const labelPhotos = (o) => (o.photos || []).filter((x) => x.kind !== 'scale'); // 환자에게는 라벨 사진만
   const baseUrl = (req) => publicUrl || (req ? `https://${req.headers.host}` : '');
   function cleanupPhotos() {
     const limit = Date.now() - PHOTO_DAYS * 86400000;
@@ -216,7 +219,7 @@ module.exports = function createHerb({ dataDir, password, secret, send, readBody
 
   async function notifyPhoto(o, by, req) {
     const c = contactOf(o.patient);
-    const why = !alimtalk.enabled('photo') ? '알림톡 미설정' : !c.phone ? '연락처 없음' : !c.consent ? '수신동의 없음' : !o.photoToken ? '사진 없음' : '';
+    const why = !alimtalk.enabled('photo') ? '알림톡 미설정' : !c.phone ? '연락처 없음' : !c.consent ? '수신동의 없음' : !o.photoToken || !labelPhotos(o).length ? '라벨 사진 없음' : '';
     const rec = { at: now(), type: '조제사진', by, ok: false, error: why };
     if (!why) {
       const r = await alimtalk.send('photo', c.phone, {
@@ -234,9 +237,10 @@ module.exports = function createHerb({ dataDir, password, secret, send, readBody
     const m = url.pathname.match(/^\/p\/([a-f0-9]{32})(?:\/(\d+)\.jpg)?$/);
     const o = m && db.orders.find((x) => x.photoToken === m[1]);
     const head = { 'X-Content-Type-Options': 'nosniff', 'Referrer-Policy': 'no-referrer', 'X-Robots-Tag': 'noindex', 'Cache-Control': 'private, max-age=300' };
-    if (!o || !o.photos || !o.photos.length) { res.writeHead(404, { ...head, 'Content-Type': 'text/html; charset=utf-8' }); return res.end('<meta name=viewport content="width=device-width"><p style="font:18px sans-serif;padding:30px">사진이 없거나 보관 기간이 지났어요.</p>'); }
+    const shown = o ? labelPhotos(o) : [];
+    if (!o || !shown.length) { res.writeHead(404, { ...head, 'Content-Type': 'text/html; charset=utf-8' }); return res.end('<meta name=viewport content="width=device-width"><p style="font:18px sans-serif;padding:30px">사진이 없거나 보관 기간이 지났어요.</p>'); }
     if (m[2] !== undefined) {
-      const ph = o.photos[Number(m[2])];
+      const ph = shown[Number(m[2])];
       if (!ph) { res.writeHead(404, head); return res.end(); }
       return fs.readFile(path.join(PHOTO_DIR, ph.file), (err, buf) => {
         if (err) { res.writeHead(404, head); return res.end(); }
@@ -248,8 +252,8 @@ module.exports = function createHerb({ dataDir, password, secret, send, readBody
     res.end(`<!doctype html><html lang="ko"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="robots" content="noindex"><title>한약 조제 사진</title>
 <style>body{margin:0;font-family:sans-serif;background:#f6f4ef;color:#23302b}.w{max-width:560px;margin:0 auto;padding:20px 16px 40px}h1{font-size:21px;color:#245647}img{width:100%;border-radius:14px;margin:10px 0;background:#fff}.m{color:#6b7872;font-size:15px;line-height:1.6}</style></head>
 <body><div class="w"><h1>🌿 ${e(clinicName || '한의원')} 한약 조제 사진</h1>
-<p class="m">${e(maskName(o.patient))}님의 ${e(o.formula || '한약')} ${o.round ? e(o.round + (o.total ? '/' + o.total : '') + '회차') : ''}<br>조제일 ${e(kstDate(o.photos[0].at))}</p>
-${o.photos.map((_, i) => `<img src="/p/${o.photoToken}/${i}.jpg" alt="조제 사진 ${i + 1}">`).join('')}
+<p class="m">${e(maskName(o.patient))}님의 ${e(o.formula || '한약')} ${o.round ? e(o.round + (o.total ? '/' + o.total : '') + '회차') : ''}<br>조제일 ${e(kstDate(shown[0].at))}</p>
+${shown.map((_, i) => `<img src="/p/${o.photoToken}/${i}.jpg" alt="조제 사진 ${i + 1}">`).join('')}
 <div style="background:#fff;border:1px solid #dde3df;border-radius:14px;padding:14px 16px;margin:12px 0"><b>💊 복용법</b><p style="margin:6px 0 0;font-size:17px;line-height:1.6;white-space:pre-wrap">${e(dosageText(o))}</p></div>
 <p class="m">받으신 뒤 바로 냉장 보관해 주세요. 궁금한 점은 카카오톡 채널로 남겨 주세요.<br>이 사진은 ${PHOTO_DAYS}일 동안만 볼 수 있어요.</p></div></body></html>`);
   }
@@ -357,7 +361,7 @@ ${o.photos.map((_, i) => `<img src="/p/${o.photoToken}/${i}.jpg" alt="조제 사
     const ready = db.orders.filter((o) => ['need_rx', 'rx_ready'].includes(o.status) && o.dueDate && o.dueDate <= today && o.dueNotified !== o.dueDate);
     for (const o of ready) {
       o.dueNotified = o.dueDate;
-      pushAll(`🌿 ${o.round || ''}회차 조제할 차례`, `${who(o)} ${o.formula || ''}${o.status === 'need_rx' ? ' — 처방전 먼저 확인' : ''}`, '', 'due-' + o.id);
+      pushAll(`🌿 ${o.round || ''}회차 조제할 차례`, `${who(o)} ${o.formula || ''} — ${PREP_DAYS ? `약 떨어지기 ${PREP_DAYS}일 전, ` : ''}조제·발송 준비${o.status === 'need_rx' ? ' (처방전 먼저 확인)' : ''}`, '', 'due-' + o.id);
     }
     if (ready.length) save();
   }
@@ -417,7 +421,7 @@ ${o.photos.map((_, i) => `<img src="/p/${o.photoToken}/${i}.jpg" alt="조제 사
     if (req.method === 'GET' && p === '/api/herb/state') {
       const contacts = Object.create(null);
       for (const o of db.orders) contacts[o.patient] = contactOf(o.patient);
-      return send(res, 200, { contacts, alimtalk: alimtalk.enabled('shipped'), kakaoPhoto: alimtalk.enabled('photo'), kakaoWelcome: alimtalk.enabled('welcome'), kakaoFollow: alimtalk.enabled('followup'), photoRead: photoRead.enabled(), pushDevices: db.pushSubs.map((x) => x.staff), trackUrl: TRACK_URL, orders: db.orders, stock: db.stock, stockLog: db.stockLog.slice(-60).reverse(), staff: db.staff, dosageByFormula: db.dosageByFormula, dosageDefault: DOSAGE_DEFAULT, statuses: STATUSES, next: NEXT, pkgPresets: PKG_PRESETS, cycle: CYCLE, followups: followups(), today: kstDate(), cycle: CYCLE, clinicName });
+      return send(res, 200, { contacts, alimtalk: alimtalk.enabled('shipped'), kakaoPhoto: alimtalk.enabled('photo'), kakaoWelcome: alimtalk.enabled('welcome'), kakaoFollow: alimtalk.enabled('followup'), photoRead: photoRead.enabled(), pushDevices: db.pushSubs.map((x) => x.staff), trackUrl: TRACK_URL, orders: db.orders, stock: db.stock, stockLog: db.stockLog.slice(-60).reverse(), staff: db.staff, dosageByFormula: db.dosageByFormula, dosageDefault: DOSAGE_DEFAULT, statuses: STATUSES, next: NEXT, pkgPresets: PKG_PRESETS, cycle: CYCLE, prepDays: PREP_DAYS, followups: followups(), today: kstDate(), cycle: CYCLE, clinicName });
     }
 
     if (req.method === 'PUT' && p === '/api/herb/staff') {
@@ -463,6 +467,34 @@ ${o.photos.map((_, i) => `<img src="/p/${o.photoToken}/${i}.jpg" alt="조제 사
       }
       save();
       return send(res, 200, { followups: followups() });
+    }
+
+    // 직원용 사진 보기 (라벨+저울 모두)
+    const pv = p.match(/^\/api\/herb\/photo\/([a-f0-9]+)\/(\d+)$/);
+    if (pv && req.method === 'GET') {
+      const o = db.orders.find((x) => x.id === pv[1]); const ph = o && (o.photos || [])[Number(pv[2])];
+      if (!ph) return send(res, 404, { error: 'not found' });
+      return fs.readFile(path.join(PHOTO_DIR, ph.file), (err, buf) => {
+        if (err) return send(res, 404, { error: 'not found' });
+        res.writeHead(200, { 'Content-Type': 'image/jpeg', 'Cache-Control': 'private, max-age=600', 'X-Content-Type-Options': 'nosniff' }); res.end(buf);
+      });
+    }
+
+    // 조제 사진 분류 (라벨 이름 / 저울 무게)
+    if (req.method === 'POST' && p === '/api/herb/scan-label') {
+      if (needActor()) return;
+      if (limited(ip, 'herbscanlabel', 300, 3600 * 1000)) return send(res, 429, { error: '사진 읽기가 너무 많아요. 잠시 후 다시 해주세요.' });
+      const b = await readBody(req, 8_000_000);
+      const img = typeof b.image === 'string' ? b.image.replace(/^data:image\/\w+;base64,/, '') : '';
+      if (!img) return send(res, 400, { error: '사진이 없어요.' });
+      const r = await photoRead.readLabel(img);
+      if (!r.ok) return send(res, 422, { error: r.error });
+      const d = r.data;
+      const name = typeof d.name === 'string' ? d.name.replace(/님$/, '').trim() : '';
+      return send(res, 200, {
+        kind: ['label', 'scale'].includes(d.kind) ? d.kind : 'other',
+        name: /^[가-힣]{2,5}$/.test(name) ? name : '', weight: int(d.weight, 1, 20000), date: isDate(d.date) ? d.date : '',
+      });
     }
 
     // 15일 알람: 카카오 알림톡으로 안부 보내기
@@ -625,9 +657,9 @@ ${o.photos.map((_, i) => `<img src="/p/${o.photoToken}/${i}.jpg" alt="조제 사
             id: rid(), patient: o.patient, formula: o.formula, round: o.round + 1, total: o.total,
             delivery: o.delivery, kind: o.kind, note: '', assignee: '', location: '', sentAt: null,
             status: 'need_rx', createdAt: now(), createdBy: by, updatedAt: now(), version: 1,
-            dueDate: addDays(kstDate(o.sentAt), CYCLE), // 다음 회차 조제할 날 (직전 발송 + 15일)
+            dueDate: addDays(kstDate(o.sentAt), CYCLE - PREP_DAYS), // 다음 회차 조제 알림일 (약 떨어지기 5일 전)
             pkgDays: o.pkgDays || 0, pkgStart: o.pkgStart || '', pkgEnd: o.pkgEnd || '', dosage: o.dosage || '',
-            history: [{ at: now(), by, from: null, to: 'need_rx', note: `${o.round}회차 발송 후 자동 생성 (조제 예정 ${addDays(kstDate(o.sentAt), CYCLE)})` }],
+            history: [{ at: now(), by, from: null, to: 'need_rx', note: `${o.round}회차 발송 후 자동 생성 (약 떨어지는 날 ${addDays(kstDate(o.sentAt), CYCLE)}, ${PREP_DAYS}일 전 조제 알림)` }],
           };
           db.orders.push(nextCard);
         }
@@ -679,26 +711,30 @@ ${o.photos.map((_, i) => `<img src="/p/${o.photoToken}/${i}.jpg" alt="조제 사
         return send(res, 200, o);
       }
 
-      if (!m[2] && req.method === 'POST' && b.photos !== undefined) {
-        const imgs = Array.isArray(b.photos) ? b.photos.slice(0, 4) : [];
-        const bufs = imgs.map((x) => Buffer.from(String(x).replace(/^data:image\/\w+;base64,/, ''), 'base64'))
+      if (!m[2] && req.method === 'POST' && (b.photos !== undefined || b.scalePhotos !== undefined)) {
+        const toBufs = (arr) => (Array.isArray(arr) ? arr.slice(0, 4) : [])
+          .map((x) => Buffer.from(String(x).replace(/^data:image\/\w+;base64,/, ''), 'base64'))
           .filter((x) => x.length > 1000 && x.length < 3_000_000 && x[0] === 0xff && x[1] === 0xd8); // JPEG만
-        if (!bufs.length && !b.sendOnly) return send(res, 400, { error: '사진이 없어요.' });
-        if (bufs.length) {
+        const items = [...toBufs(b.photos).map((buf) => ['label', buf]), ...toBufs(b.scalePhotos).map((buf) => ['scale', buf])];
+        const weight = int(b.weight, 1, 20000);
+        if (!items.length && !b.sendOnly && !weight) return send(res, 400, { error: '사진이 없어요.' });
+        if (items.length || weight) {
           fs.mkdirSync(PHOTO_DIR, { recursive: true });
           o.photoToken = o.photoToken || crypto.randomBytes(16).toString('hex');
           o.photos = o.photos || [];
-          for (const buf of bufs) {
-            if (o.photos.length >= 8) break;
+          let n = 0;
+          for (const [kind, buf] of items) {
+            if (o.photos.length >= 12) break;
             const file = `${o.id}-${crypto.randomBytes(4).toString('hex')}.jpg`;
             fs.writeFileSync(path.join(PHOTO_DIR, file), buf);
-            o.photos.push({ file, at: now(), by });
+            o.photos.push({ file, kind, at: now(), by }); n++;
           }
-          o.history.push({ at: now(), by, from: o.status, to: o.status, note: `조제 사진 ${bufs.length}장` });
+          if (weight) o.weight = weight;
+          o.history.push({ at: now(), by, from: o.status, to: o.status, note: [n ? `조제 사진 ${n}장` : '', weight ? `무게 ${weight}g` : ''].filter(Boolean).join(' · ') });
           o.updatedAt = now(); o.version++; save();
         }
-        const msg = b.notify === false ? null : await notifyPhoto(o, by, req);
-        return send(res, 200, { photos: o.photos.length, link: `${baseUrl(req)}/p/${o.photoToken}`, msg });
+        const msg = b.notify === false || !labelPhotos(o).length ? null : await notifyPhoto(o, by, req);
+        return send(res, 200, { photos: labelPhotos(o).length, scale: o.photos.length - labelPhotos(o).length, weight: o.weight || null, link: `${baseUrl(req)}/p/${o.photoToken}`, msg });
       }
 
       if (!m[2] && req.method === 'POST' && b.resend === true) {

@@ -102,6 +102,26 @@
   }
   const msgToast = (m, okText) => (m ? (m.ok ? okText : m.error === '알림톡 미설정' ? '' : ` · 카톡 안 보냄(${m.error})`) : '');
   const md2 = (d) => (d ? `${Number(d.slice(5, 7))}.${Number(d.slice(8, 10))}` : '');
+  // 복용법: 하루 몇 번 + 언제(식전/식후/식간/자기 전) + 1회량 + 보관 → 문장 자동 작성
+  const DOSE = {
+    times: [['1', '하루 1번'], ['2', '하루 2번'], ['3', '하루 3번']],
+    when: [['식전 30분', '식전 30분'], ['식후 30분', '식후 30분'], ['식간(식후 2시간)', '식간'], ['자기 전', '자기 전'], ['공복', '공복']],
+    amount: [['1팩', '1팩'], ['반 팩', '반 팩'], ['1환', '1환']],
+  };
+  const doseHTML = (val) => `<div class="f"><span>💊 복용법 (환자 카톡·사진 페이지에 나가요)</span>
+      ${segHTML('dtimes', DOSE.times, '')}<div style="height:6px"></div>${segHTML('dwhen', DOSE.when, '')}<div style="height:6px"></div>${segHTML('damt', DOSE.amount, '')}
+      <label style="display:flex;gap:8px;align-items:center;margin:8px 0"><input type="checkbox" data-dcold checked style="width:auto"> 냉장 보관, 따뜻하게 데워서</label>
+      <textarea name="dosage" rows="2" maxlength="300" placeholder="위에서 고르면 자동으로 써져요 (직접 고쳐도 돼요)">${esc(val || '')}</textarea></div>`;
+  function bindDose(el, f) {
+    const make = () => {
+      const t = segVal(el, 'dtimes'), w = segVal(el, 'dwhen'), a = segVal(el, 'damt');
+      if (!t && !w && !a) return;
+      const parts = [t ? `하루 ${t}번` : '', w || '', a ? `${a}씩` : ''].filter(Boolean).join(', ');
+      f.dosage.value = `${parts} 드세요.${el.querySelector('[data-dcold]').checked ? ' 냉장 보관하고 따뜻하게 데워 드세요.' : ''}`;
+    };
+    ['dtimes', 'dwhen', 'damt'].forEach((k) => el.querySelector(`[data-seg="${k}"]`).addEventListener('change', make));
+    el.querySelector('[data-dcold]').addEventListener('change', make);
+  }
   const roundTxt = (o) => (o.round ? `${o.round}${o.total ? '/' + o.total : '회차'}` : '');
 
   function toast(msg, err) {
@@ -326,6 +346,7 @@
       <div class="meta">${esc(o.formula || '처방 미기재')}${o.pkgDays ? ` · 🗓 ${o.pkgDays}일 패키지(~${md2(o.pkgEnd)})` : ''}${o.location ? ' · 📦 ' + esc(o.location) : ''} · ${fmt(o.updatedAt)}</div>
       ${o.assignee ? `<div class="who">조제: <b>${esc(o.assignee)}</b></div>` : ''}
       ${o.status === 'sent' ? `<div class="who">${esc(o.delivery)} ${fmt(o.sentAt)} · ${esc(o.history[o.history.length - 1]?.by || '')}${(() => { const m = (o.messages || []).slice(-1)[0]; return m ? (m.ok ? ' · 💬 알림톡 보냄' : ` · <span style="color:#b3261e">💬 안 보냄(${esc(m.error)})</span>`) : ''; })()}</div>` : ''}
+      ${o.dosage ? `<div class="who">💊 ${esc(o.dosage.length > 40 ? o.dosage.slice(0, 40) + '…' : o.dosage)}</div>` : ''}
       ${o.note ? `<div class="note">${esc(o.note)}</div>` : ''}
       <div class="acts">${acts}${['done', 'sent'].includes(o.status) ? `<button class="ab" data-photo="${o.id}">📷 사진</button>` : ''}</div>
     </div>`;
@@ -552,6 +573,7 @@
         <label class="f"><span>환자 이름 *</span><input name="patient" required autocomplete="off" value="${esc(pre.patient || '')}"></label>${chips('patient', pre.patients)}
         <div id="dupwarn"></div>
         <label class="f"><span>처방</span><input name="formula" placeholder="예: 당귀수산" list="formulas" value="${esc(pre.formula || '')}"></label>${chips('formula', pre.formulas)}
+        ${doseHTML('')}
         <datalist id="formulas">${S.stock.map((s) => `<option value="${esc(s.name)}">`).join('')}</datalist>
         <div class="f"><span>결제한 패키지 일수 (총 회차 자동 · 1회차 = ${S.cycle || 15}일)</span>
           ${segHTML('pkg', (S.pkgPresets || []).map((d) => [d, `${d}일`]), '')}
@@ -601,6 +623,9 @@
       };
       el.querySelector('[data-seg="pkg"]').addEventListener('change', () => { f.pkgDays.value = segVal(el, 'pkg') || ''; pkgApply(); });
       f.pkgDays.addEventListener('input', () => { el.querySelectorAll('[data-seg="pkg"] button').forEach((x) => x.classList.toggle('on', x.dataset.v === f.pkgDays.value)); pkgApply(); });
+      bindDose(el, f);
+      // 처방을 고르면 그 처방의 지난 복용법 자동 채움
+      f.formula.addEventListener('change', () => { const d = (S.dosageByFormula || {})[f.formula.value.trim()]; if (d && !f.dosage.value) f.dosage.value = d; });
       el.querySelectorAll('[data-cand]').forEach((g) => g.addEventListener('click', (e) => {
         const b = e.target.closest('button'); if (!b) return;
         f[g.dataset.cand].value = b.textContent;
@@ -635,7 +660,7 @@
         const body = {
           patient: f.patient.value, formula: f.formula.value, round: f.round.value || null, total: f.total.value || null,
           hasRx: segVal(el, 'rx') === '1', kind: segVal(el, 'kind'), delivery: segVal(el, 'delivery'), note: f.note.value,
-          phone: f.phone.value, consent: f.consent.checked, adConsent: f.adConsent.checked, pkgDays: Number(f.pkgDays.value) || 0,
+          phone: f.phone.value, consent: f.consent.checked, adConsent: f.adConsent.checked, pkgDays: Number(f.pkgDays.value) || 0, dosage: f.dosage.value,
         };
         try {
           const r = await api('POST', '/api/herb/orders', body);
@@ -758,6 +783,7 @@
         <label class="f"><span>패키지 일수${o.pkgStart ? ` (결제 ${md2(o.pkgStart)} → 종료 ${md2(o.pkgEnd)})` : ''} · 비우면 없음</span><input name="pkgDays" type="number" min="15" max="730" inputmode="numeric" value="${o.pkgDays || ''}"></label>
         <div class="f"><span>구분</span>${segHTML('kind', [['비급여', '비급여'], ['자보', '자보'], ['기타', '기타']], o.kind)}</div>
         <div class="f"><span>받는 방법</span>${segHTML('delivery', [['택배', '택배'], ['직수', '직수'], ['내원', '내원']], o.delivery)}</div>
+        ${doseHTML(o.dosage)}
         <label class="f"><span>보관 위치</span><input name="location" value="${esc(o.location)}"></label>
         ${['need_rx', 'rx_ready'].includes(o.status) ? `<label class="f"><span>조제 예정일 (이 날 알림)</span><input name="dueDate" type="date" value="${esc(o.dueDate || '')}"></label>` : ''}
         ${o.delivery === '택배' ? `<label class="f"><span>로젠 송장번호</span><input name="tracking" inputmode="numeric" value="${esc(o.tracking || '')}"></label>` : ''}
@@ -783,13 +809,14 @@
           await api('PATCH', `/api/herb/orders/${id}`, {
             version: o.version, patient: f.patient.value, formula: f.formula.value, round: f.round.value || null, total: f.total.value || null,
             kind: segVal(el, 'kind'), delivery: segVal(el, 'delivery'), location: f.location.value, note: f.note.value,
-            pkgDays: Number(f.pkgDays.value) || 0,
+            pkgDays: Number(f.pkgDays.value) || 0, dosage: f.dosage.value,
             ...(f.tracking ? { tracking: f.tracking.value } : {}),
             ...(f.dueDate && f.dueDate.value ? { dueDate: f.dueDate.value } : {}),
           });
           el.remove(); toast('저장했어요'); load();
         } catch (err) { toast(err.message, true); }
       };
+      bindDose(el, f);
       const cf = el.querySelector('#cf');
       cf.onsubmit = async (e) => {
         e.preventDefault();
